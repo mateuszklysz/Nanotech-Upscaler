@@ -237,6 +237,48 @@ void lock_colours(Image& colour, const Image& work, int amount, Edges edges) {
     }
 }
 
+// What the network sees: transparent texels take the colour of their visible neighbours (spread
+// outwards a texel a pass), so a cut-out's hidden ground (often magenta or black) does not bleed
+// into its edges as a fringe.
+Image network_view(const Image& work, Edges edges) {
+    Image view = work;
+    const int w = view.width, h = view.height;
+    std::vector<std::uint8_t> known(static_cast<std::size_t>(w) * h);
+    std::size_t unknown = 0;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            const bool seen = view.at(x, y)[3] > 0;
+            known[static_cast<std::size_t>(y) * w + x] = seen ? 1 : 0;
+            if (!seen) ++unknown;
+        }
+    if (unknown == 0 || unknown == known.size()) return view;
+    for (int pass = 0; pass < 64 && unknown > 0; ++pass) {
+        std::vector<std::uint8_t> next = known;
+        const Image before = view;
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                if (known[static_cast<std::size_t>(y) * w + x]) continue;
+                int sum[3] = {0, 0, 0}, n = 0;
+                for (int dy = -1; dy <= 1; ++dy) {
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const int sx = edge_x(x + dx, w, edges), sy = edge_y(y + dy, h, edges);
+                        if (!known[static_cast<std::size_t>(sy) * w + sx]) continue;
+                        const std::uint8_t* p = before.at(sx, sy);
+                        for (int c = 0; c < 3; ++c) sum[c] += p[c];
+                        ++n;
+                    }
+                }
+                if (n == 0) continue;
+                for (int c = 0; c < 3; ++c) view.at(x, y)[c] = static_cast<std::uint8_t>((sum[c] + n / 2) / n);
+                next[static_cast<std::size_t>(y) * w + x] = 1;
+                --unknown;
+            }
+        }
+        known = std::move(next);
+    }
+    return view;
+}
+
 // The network's colour (4x; `given` when the page's GPU made it) with xBRZ's alpha at the same
 // scale: the network sees no alpha, and xBRZ keeps a cut-out's edges where the game has them.
 // `strength` mixes in the smooth curve, the colour lock the source's colours; 2x is 4x averaged.
@@ -245,7 +287,7 @@ Image scale_neural(const Network* network, const Image* given, const Image& work
     const bool wrap_x = repeats(options.edges, false), wrap_y = repeats(options.edges, true);
     Image colour;
     if (given != nullptr && given->width == work.width * 4 && given->height == work.height * 4) colour = *given;
-    else colour = neural_x4(*network, work, options.denoise, wrap_x, wrap_y);
+    else colour = neural_x4(*network, network_view(work, options.edges), options.denoise, wrap_x, wrap_y);
     if (colour.empty()) return {};
     if (options.strength < 100) {
         const Image smooth = scale_smooth(padded, 4, work.width, work.height);
@@ -256,7 +298,7 @@ Image scale_neural(const Network* network, const Image* given, const Image& work
             }
         }
     }
-    if (options.colour_lock > 0) lock_colours(colour, work, options.colour_lock, options.edges);
+    if (options.colour_lock > 0) lock_colours(colour, network_view(work, options.edges), options.colour_lock, options.edges);
     if (scale == 2) {
         Image half(work.width * 2, work.height * 2);
         for (int y = 0; y < half.height; ++y) {
@@ -315,7 +357,7 @@ Options options_from(const std::int32_t* values, int count) {
 
 Image neural_input(const Image& source, const Options& options) {
     AlphaScale alpha_scale;
-    return prepared(source, options, alpha_scale);
+    return network_view(prepared(source, options, alpha_scale), options.edges);
 }
 
 Image upscale(const Image& source, const Options& options, const Network* network, const Image* colour) {
