@@ -20,7 +20,21 @@
         <section class="preview panel" aria-label="Preview" data-section>
           <div class="preview-main">
             <div id="preview" class="compare big"></div>
-            <div class="picker">
+            <div id="ratchet" class="compare big ratchet" hidden>
+              <canvas id="ratchet-canvas"></canvas>
+              <div class="line"></div>
+              <input id="ratchet-split" type="range" min="0" max="100" value="50" aria-label="Before and after" />
+              <span class="label left">Original</span>
+              <span class="label right">Upscaled</span>
+              <span id="ratchet-busy" class="busy" hidden>…</span>
+            </div>
+            <div id="ratchet-bar" class="picker" hidden>
+              <button id="turn-left" aria-label="Turn him left">⟲</button>
+              <button id="turn-right" aria-label="Turn him right">⟳</button>
+              <button id="close-up" aria-pressed="false">Close up</button>
+              <span class="dim small">Ratchet with his own textures, posed by his idle.</span>
+            </div>
+            <div id="texture-bar" class="picker">
               <select id="group" aria-label="Which textures"></select>
               <button id="prev" aria-label="Previous texture">‹</button>
               <span id="which" class="dim"></span>

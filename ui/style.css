@@ -388,3 +388,20 @@ progress {
 .error {
   color: var(--err);
 }
+
+/* Ratchet: one WebGL picture, his original textures left of the line, the upscaled right. */
+.ratchet {
+  aspect-ratio: 4 / 5;
+  background: radial-gradient(circle at 50% 40%, #2c2c40, #15151d);
+}
+.ratchet canvas {
+  image-rendering: auto;
+}
+.strip .ratchet-pick {
+  font-weight: 700;
+  color: var(--amber);
+  font-size: 12px;
+}
+#close-up[aria-pressed="true"] {
+  border-color: var(--amber);
+}

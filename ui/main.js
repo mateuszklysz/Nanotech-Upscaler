@@ -6,6 +6,7 @@ import { setupPad } from "./pad.js";
 import { Pool, workerCount } from "./pool.js";
 import { BUILT_IN, clean, DEFAULTS, engineValues, OPTIONS, shown } from "./options.js";
 import { SAMPLES } from "./samples.js";
+import { loadModel, RatchetView } from "./ratchet.js";
 import { collect } from "./textures.js";
 import { ZipWriter } from "./zip.js";
 
@@ -27,6 +28,7 @@ const state = {
   include: { world: true, interface: true, effects: true },
   group: "world",
   index: 0,
+  mode: "texture", // the preview: "texture" or "ratchet"
   making: null,
 };
 
@@ -312,6 +314,8 @@ async function importPreset() {
 // The preview: one texture large, and a strip of others
 
 const preview = { view: null, round: 0 };
+// Ratchet: his model and view once loaded, his textures' originals, the frame loop.
+const ratchet = { file: null, view: null, originals: null, round: 0, frame: 0, failed: false };
 
 function currentList() {
   return state.textures[state.group] ?? [];
@@ -332,19 +336,82 @@ function showPicker() {
   $("prev").disabled = $("next").disabled = list.length < 2;
 }
 
-function pick(group, index) {
-  const list = state.textures[group];
-  if (!list?.length) return;
-  state.group = group;
-  state.index = ((index % list.length) + list.length) % list.length;
-  showPicker();
+function showMode() {
+  const onRatchet = state.mode === "ratchet";
+  $("preview").hidden = $("texture-bar").hidden = onRatchet;
+  $("ratchet").hidden = $("ratchet-bar").hidden = !onRatchet;
   for (const b of $("strip").querySelectorAll("button")) {
-    b.setAttribute("aria-pressed", String(b.dataset.group === group && Number(b.dataset.index) === state.index));
+    const pressed = b.dataset.ratchet
+      ? onRatchet
+      : !onRatchet && b.dataset.group === state.group && Number(b.dataset.index) === state.index;
+    b.setAttribute("aria-pressed", String(pressed));
   }
+  cancelAnimationFrame(ratchet.frame);
+  if (onRatchet && ratchet.view) loop();
+}
+
+function loop() {
+  ratchet.view.draw();
+  ratchet.frame = requestAnimationFrame(loop);
+}
+
+function pickRatchet() {
+  state.mode = "ratchet";
+  showMode();
   void drawPreview();
 }
 
+function pick(group, index) {
+  const list = state.textures[group];
+  if (!list?.length) return;
+  state.mode = "texture";
+  state.group = group;
+  state.index = ((index % list.length) + list.length) % list.length;
+  showPicker();
+  showMode();
+  void drawPreview();
+}
+
+async function drawRatchet() {
+  const round = ++ratchet.round;
+  $("ratchet-busy").hidden = false;
+  try {
+    if (!ratchet.view) {
+      const bytes = await call("read", { root: "levels", path: ratchet.file.path });
+      const model = loadModel(bytes, ratchet.file.path);
+      ratchet.view = new RatchetView($("ratchet-canvas"), model);
+      ratchet.originals = new Map();
+      for (const path of new Set(model.parts.map((p) => p.texture).filter(Boolean))) {
+        const png = await call("read", { root: "levels", path });
+        ratchet.originals.set(path, { png, shown: await decodeForShow(png.slice(0)) });
+      }
+      ratchet.view.textures(
+        0,
+        [...ratchet.originals].map(([path, t]) => [path, t.shown]),
+      );
+      if (state.mode === "ratchet") showMode();
+    }
+    const upscaled = [];
+    for (const [path, t] of ratchet.originals) {
+      const out = await state.pool.run(
+        { kind: "png", png: t.png.slice(0), values: engineValues(state.values, 0, 1), asPng: false, keepRgba: true },
+        [],
+        true,
+      );
+      if (round !== ratchet.round) return;
+      if (out.rgba) upscaled.push([path, out]);
+    }
+    ratchet.view.textures(1, upscaled);
+  } catch (e) {
+    ratchet.failed = true;
+    status(`Ratchet could not be shown: ${e.message}`, true);
+  } finally {
+    if (round === ratchet.round) $("ratchet-busy").hidden = true;
+  }
+}
+
 async function drawPreview() {
+  if (state.mode === "ratchet") return drawRatchet();
   const texture = currentList()[state.index];
   if (!texture) return;
   const round = ++preview.round;
@@ -389,6 +456,18 @@ async function buildStrip() {
   const groups = GROUPS.filter((g) => state.textures[g.key].length);
   const each = Math.max(1, Math.floor(STRIP_SIZE / Math.max(1, groups.length)));
   const items = [];
+  if (ratchet.file) {
+    const li = document.createElement("li");
+    const button = Object.assign(document.createElement("button"), {
+      className: "ratchet-pick",
+      textContent: "Ratchet",
+    });
+    button.dataset.ratchet = "1";
+    button.setAttribute("aria-label", "Ratchet, with his textures");
+    button.addEventListener("click", pickRatchet);
+    li.append(button);
+    strip.append(li);
+  }
   for (const g of groups) {
     const list = state.textures[g.key];
     const n = Math.min(each, list.length);
@@ -406,6 +485,7 @@ async function buildStrip() {
     li.append(button);
     strip.append(li);
   }
+  showMode();
   // Their pictures, one after another, after the page is up.
   for (const item of items) {
     const texture = state.textures[item.group][item.index];
@@ -628,7 +708,10 @@ async function start() {
   $("dump-hint").hidden = state.textures.interface.length > 0;
   showGroups();
   state.group = GROUPS.find((g) => state.textures[g.key].length)?.key ?? "world";
-  pick(state.group, 0);
+  ratchet.file = state.textures.ratchet;
+  showPicker();
+  if (ratchet.file) pickRatchet();
+  else pick(state.group, 0);
   void buildStrip();
 }
 
@@ -646,6 +729,18 @@ $("import-preset").addEventListener("click", () => void importPreset().catch((e)
 $("group").addEventListener("change", () => pick($("group").value, 0));
 $("prev").addEventListener("click", () => pick(state.group, state.index - 1));
 $("next").addEventListener("click", () => pick(state.group, state.index + 1));
+$("ratchet-split").addEventListener("input", () => {
+  const v = Number($("ratchet-split").value);
+  $("ratchet").style.setProperty("--split", `${v}%`);
+  if (ratchet.view) ratchet.view.split = v / 100;
+});
+$("turn-left").addEventListener("click", () => ratchet.view && (ratchet.view.angle -= 0.5));
+$("turn-right").addEventListener("click", () => ratchet.view && (ratchet.view.angle += 0.5));
+$("close-up").addEventListener("click", () => {
+  if (!ratchet.view) return;
+  ratchet.view.close = !ratchet.view.close;
+  $("close-up").setAttribute("aria-pressed", String(ratchet.view.close));
+});
 $("make").addEventListener("click", () => void makePack(false));
 $("make-new").addEventListener("click", () => void makePack(true));
 $("cancel").addEventListener("click", stopMaking);
