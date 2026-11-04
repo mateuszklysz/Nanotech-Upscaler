@@ -1,7 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Answers the page's calls as the launcher does (launcher/src/lib/modTool.ts), from serve.mjs.
 const frame = document.getElementById("page");
-const store = new Map();
+// The mod's store, kept in the browser like the launcher keeps it on disk (a reload keeps it).
+const store = {
+  get: (key) => {
+    try {
+      return JSON.parse(localStorage.getItem(`nanotech:${key}`));
+    } catch {
+      return null;
+    }
+  },
+  set: (key, value) => {
+    try {
+      localStorage.setItem(`nanotech:${key}`, JSON.stringify(value));
+    } catch {
+      // A browser that keeps nothing: the page starts fresh.
+    }
+  },
+};
 const saving = new Map();
 let token = 0;
 
