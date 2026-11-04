@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (c) 2026 Mateusz Kłysz
-"""Real-ESRGAN's SRVGGNetCompact weights (a PyTorch .pth) as the engine reads them, without PyTorch.
+"""A super-resolution network's weights (a PyTorch .pth) as the engine reads them, without PyTorch.
 
-    tools/convert_weights.py <realesr-general-x4v3.pth> <out.bin> [--wdn <realesr-general-wdn-x4v3.pth>]
+    tools/convert_weights.py <model.pth> <out.bin> [--wdn <realesr-general-wdn-x4v3.pth>]
 
-out.bin: "NTNN", then u32 version 1, u32 layers; per layer u32 kind (0 conv 3x3, 1 PReLU),
-u32 out, u32 in, then its floats (little end): a conv's weights [out][in][3][3] and bias [out],
-a PReLU's slopes [out]. With --wdn the two models' weights are both written, the weakly denoising one
-second (the engine blends them, as Real-ESRGAN's denoise strength does).
+Real-ESRGAN's compact network (SRVGGNetCompact: realesr-general-x4v3, realesr-animevideov3) and
+PLKSR-Rep (PLKSR with its 1x1 branches folded into the 3x3s) are read. out.bin is the op list of
+src/engine/neural.hpp ("NTN2"). With --wdn the weakly denoising model is written second (the
+engine blends the two, as Real-ESRGAN's denoise strength does).
 """
 from __future__ import annotations
 
@@ -54,22 +54,83 @@ def load(path: str) -> dict[str, tuple[list[int], array]]:
             return _Storage(pid[2])
 
     state = Unpickler(z.open(f"{prefix}/data.pkl")).load()
-    return state.get("params", state)
+    return state.get("params_ema") or state.get("params", state)
 
 
-def layers(state):
-    # body.0 conv in, body.1 PReLU, then pairs, the last conv: SRVGGNetCompact's order.
-    index = sorted({int(k.split(".")[1]) for k in state}, key=int)
-    for i in index:
-        w = state.get(f"body.{i}.weight")
-        b = state.get(f"body.{i}.bias")
-        if b is not None:
-            (o, n, kh, kw), weights = w
-            assert (kh, kw) == (3, 3)
-            yield 0, o, n, list(weights) + list(b[1])
+def conv(k, n, o, src, dst, weights, bias, act=0, aux=0, pas=0, slopes=None):
+    values = list(weights) + list(bias) + (list(slopes) if act == 1 else [])
+    return struct.pack("<9I", 0, k, n, o, src, dst, act, aux, pas) + struct.pack(f"<{len(values)}f", *values)
+
+
+def shuffle(src, input_):
+    return struct.pack("<3I", 1, src, input_)
+
+
+def compact(state):
+    """SRVGGNetCompact: body.0 conv, body.1 PReLU, then conv/PReLU pairs, the last conv (48)."""
+    index = sorted({int(k.split(".")[1]) for k in state})
+    ops, src, dst, i = [], 0, 1, 0
+    while i < len(index):
+        (o, n, k, _), w = state[f"body.{index[i]}.weight"]
+        b = state[f"body.{index[i]}.bias"][1]
+        slope = state.get(f"body.{index[i + 1]}.weight") if i + 1 < len(index) else None
+        if slope is not None and f"body.{index[i + 1]}.bias" not in state:
+            ops.append(conv(k, n, o, src, dst, w, b, act=1, slopes=slope[1]))
+            i += 2
         else:
-            (o,), slopes = w
-            yield 1, o, o, list(slopes)
+            ops.append(conv(k, n, o, src, dst, w, b))
+            i += 1
+        src, dst = dst, (2 if dst == 1 else 1)
+    ops.append(shuffle(src, 0))
+    return ops
+
+
+def folded(state, name):
+    """A RepVGG-style conv: its 1x1 branch added to the 3x3's centre."""
+    (o, n, k, _), w = state[f"{name}.rbr_dense.weight"]
+    w = array("f", w)
+    _, w1 = state[f"{name}.rbr_1x1.weight"]
+    for oi in range(o):
+        for ii in range(n):
+            w[((oi * n + ii) * k + k // 2) * k + k // 2] += w1[oi * n + ii]
+    b = [x + y for x, y in zip(state[f"{name}.rbr_dense.bias"][1], state[f"{name}.rbr_1x1.bias"][1])]
+    return o, n, k, w, b
+
+
+def plksr(state):
+    """PLKSR-Rep: feats.0 conv, PLK blocks, the last conv (48). A block: channel mixer (3x3 to 2x,
+    GELU, 3x3 back), the large kernel on the first channels, an attention gate, a 1x1 refine plus
+    the block's input."""
+    blocks = sorted({int(k.split(".")[1]) for k in state if ".lk." in k})
+    (o, n, k, _), w = state["feats.0.weight"]
+    ops = [conv(k, n, o, 0, 1, w, state["feats.0.bias"][1])]
+    x, y = 1, 6
+    for i in blocks:
+        p = f"feats.{i}."
+        o, n, k, w, b = folded(state, p + "channe_mixer.conv1")
+        ops.append(conv(k, n, o, x, 2, w, b, act=2))
+        o, n, k, w, b = folded(state, p + "channe_mixer.conv2")
+        ops.append(conv(k, n, o, 2, 3, w, b))
+        (o, n, k, _), w = state[p + "lk.conv.weight"]
+        ops.append(conv(k, n, o, 3, 4, w, state[p + "lk.conv.bias"][1], pas=1))
+        (o, n, k, _), w = state[p + "attn.f.0.weight"]
+        ops.append(conv(k, n, o, 4, 5, w, state[p + "attn.f.0.bias"][1], act=3, aux=4))
+        (o, n, k, _), w = state[p + "refine.weight"]
+        ops.append(conv(k, n, o, 5, y, w, state[p + "refine.bias"][1], act=4, aux=x))
+        x, y = y, x
+    last = max(int(k.split(".")[1]) for k in state if k.startswith("feats."))
+    (o, n, k, _), w = state[f"feats.{last}.weight"]
+    ops.append(conv(k, n, o, x, 7, w, state[f"feats.{last}.bias"][1]))
+    ops.append(shuffle(7, 0))
+    return ops
+
+
+def network(state):
+    if any(k.startswith("body.") for k in state):
+        return compact(state)
+    if any(".lk." in k for k in state):
+        return plksr(state)
+    raise SystemExit("not a network this tool knows (SRVGGNetCompact or PLKSR-Rep)")
 
 
 def main() -> int:
@@ -80,15 +141,14 @@ def main() -> int:
         wdn = args[at + 1]
         del args[at : at + 2]
     source, out = args
-    models = [load(source)] + ([load(wdn)] if wdn else [])
+    models = [network(load(source))] + ([network(load(wdn))] if wdn else [])
     with open(out, "wb") as f:
-        for state in models:
-            ls = list(layers(state))
-            f.write(b"NTNN" + struct.pack("<II", 1, len(ls)))
-            for kind, o, n, values in ls:
-                f.write(struct.pack("<III", kind, o, n))
-                f.write(struct.pack(f"<{len(values)}f", *values))
-            print(f"{len(ls)} layers, {sum(len(v) for *_, v in ls)} values")
+        f.write(b"NTN2" + struct.pack("<II", 2, len(models)))
+        for ops in models:
+            f.write(struct.pack("<I", len(ops)))
+            for op in ops:
+                f.write(op)
+            print(f"{len(ops)} ops")
     return 0
 
 

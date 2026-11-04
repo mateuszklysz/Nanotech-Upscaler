@@ -31,10 +31,12 @@ int main() {
         {"neural", {4, 4}},
         {"neural-x2", {2, 4, 0, 0}},
         {"neural-grain", {4, 4, 0, 1, 0, 1, 30, 100, 40, 0, 0, 40}},
+        {"neural-soft", {4, 4, 0, 1, 1, 1, 30, 100, 40, 20, 10, 100, 60, 0}},
+        {"neural-lock", {4, 4, 0, 3, 0, 1, 30, 100, 40, 0, 0, 100, 100, 80}},
     };
     const nanotech::Network network = nanotech::samples::tiny_network();
     // Every value, so a GS sample can be told its alpha scale and edges.
-    const std::vector<std::int32_t> defaults = {4, 0, 0, 1, 0, 1, 30, 100, 40, 0, 0, 100};
+    const std::vector<std::int32_t> defaults = {4, 0, 0, 1, 0, 1, 30, 100, 40, 0, 0, 100, 100, 0};
     for (const auto& sample : nanotech::samples::all()) {
         const bool gs = sample.name == "glow" || sample.name == "lines";
         for (const auto& setting : settings) {

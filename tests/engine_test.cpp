@@ -149,6 +149,12 @@ void neural_engine() {
         check(x2.width == image.width * 2, "Neural under 4x makes 2x");
         check(nanotech::upscale(image, opts).rgba == scaled(image, {4, 0, 0, 1}).rgba,
               "Neural without a network is xBRZ");
+        // The page's GPU path: the network's colour made outside and handed in.
+        std::vector<std::int32_t> tuned = {4, 4, 0, 2, 1, 1, 30, 100, 40, 10, 0, 60, 70, 50};
+        const auto t = nanotech::options_from(tuned.data(), static_cast<int>(tuned.size()));
+        const nanotech::Image colour = nanotech::neural_x4(net, nanotech::neural_input(image, t), 60, true, false);
+        check(nanotech::upscale(image, t, nullptr, &colour).rgba == nanotech::upscale(image, t, &net).rgba,
+              "a colour made outside gives the same bytes as the engine's network");
     }
 }
 

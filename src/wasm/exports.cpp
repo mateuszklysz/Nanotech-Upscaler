@@ -63,6 +63,46 @@ NT_EXPORT(nt_load_network) int nt_load_network(const std::uint8_t* data, std::ui
     return network.empty() ? 1 : 0;
 }
 
+namespace {
+// A PNG's texture, or RGBA texels, into `source`; false when the PNG cannot be read.
+bool source_of(const std::uint8_t* data, std::uint32_t size, int width, int height, nanotech::Image& source) {
+    if (width == 0) return nanotech::decode_png(data, size, source);
+    if (width < 0 || height <= 0 || width > nanotech::kMaxSide || height > nanotech::kMaxSide) return false;
+    source = nanotech::Image(width, height);
+    std::copy_n(data, source.rgba.size(), source.rgba.data());
+    return true;
+}
+}  // namespace
+
+// For the page's GPU: what the network is given for a texture (a PNG, or RGBA texels when `width`
+// is not 0), as the result's texels. 0 when it worked, 1 when it cannot be read.
+NT_EXPORT(nt_neural_input) int nt_neural_input(const std::uint8_t* data, std::uint32_t size, int width, int height,
+                                               const std::int32_t* values, int count) {
+    result = Result{};
+    nanotech::Image source;
+    if (!source_of(data, size, width, height, source)) return 1;
+    result.hash = nanotech::texture_hash(source);
+    result.image = nanotech::neural_input(source, nanotech::options_from(values, count));
+    return 0;
+}
+
+// nt_upscale with the network's 4x colour from the page's GPU (`colour`: RGBA, 4x the texture's
+// size); `width` 0 reads `data` as a PNG, else as RGBA texels.
+NT_EXPORT(nt_upscale_colour) int nt_upscale_colour(const std::uint8_t* data, std::uint32_t size, int width, int height,
+                                                   const std::int32_t* values, int count, int png,
+                                                   const std::uint8_t* colour) {
+    result = Result{};
+    nanotech::Image source;
+    if (!source_of(data, size, width, height, source)) return 1;
+    result.hash = nanotech::texture_hash(source);
+    nanotech::Image given(source.width * 4, source.height * 4);
+    std::copy_n(colour, given.rgba.size(), given.rgba.data());
+    result.image = nanotech::upscale(source, nanotech::options_from(values, count), nullptr, &given);
+    if (result.image.empty()) return 2;
+    if (png != 0) result.png = nanotech::encode_png(result.image);
+    return 0;
+}
+
 // Only the name a PNG's texture has in a pack: 0 when it worked, 1 when it cannot be read.
 NT_EXPORT(nt_hash) int nt_hash(const std::uint8_t* data, std::uint32_t size) {
     result = Result{};

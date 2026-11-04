@@ -50,16 +50,24 @@ struct Options {
     int sharpen = 0;                   // 0 to 100: an unsharp mask after scaling
     int original = 0;                  // 0 to 100: how much of the original (its texels as squares) is mixed in
     int denoise = 100;                 // Neural: denoise strength, 0 to 100 (under 100 keeps more of the grain)
+    int strength = 100;                // Neural: the network's share against the smooth curve, 0 to 100
+    int colour_lock = 0;               // Neural: how much of the source's own colours is put back, 0 to 100
 };
 
 // The options as they arrive from the page or the command line, in this order, each clamped to its
 // range: scale, engine, alpha scale, edges, deposterize, exact alpha (0/1), tolerance, luminance,
-// direction bias, sharpen, original, denoise. Fewer values leave the rest at their defaults.
+// direction bias, sharpen, original, denoise, strength, colour lock. Fewer values leave the rest at their defaults.
 Options options_from(const std::int32_t* values, int count);
 
 // `source` scaled by `options.scale`; an empty image when the source is empty or the result would be
-// larger than kMaxSide. Neural needs `network` and makes 4x, or 2x (4x averaged down) when the scale
-// is under 4; without a network it is xBRZ.
-Image upscale(const Image& source, const Options& options, const Network* network = nullptr);
+// larger than kMaxSide or the network fails. Neural makes 4x, or 2x (4x averaged down) when the
+// scale is under 4, from `network`, or from `colour` (the network's 4x result of neural_input, made
+// by the page's GPU); with neither it is xBRZ.
+Image upscale(const Image& source, const Options& options, const Network* network = nullptr,
+              const Image* colour = nullptr);
+
+// What the network is given for `source` (its colours as the engine prepares them): the page's GPU
+// runs the network on this and hands the result back to upscale as `colour`.
+Image neural_input(const Image& source, const Options& options);
 
 }  // namespace nanotech

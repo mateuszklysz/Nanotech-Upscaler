@@ -199,11 +199,64 @@ void sharpen(Image& image, int amount, Edges edges) {
     }
 }
 
-// The network's colour (4x, averaged down to 2x when asked) with xBRZ's alpha at the same scale:
-// the network sees no alpha, and xBRZ keeps a cut-out's edges where the game has them.
-Image scale_neural(const Network& network, const Image& work, const Image& padded, int scale, const Options& options) {
+// The source's own colours put back into the network's: each texel's difference to the average of
+// its 4x4 block, spread smoothly (bilinear) over the result, `amount` percent of it. Networks drift
+// a palette's hues a little; the game's artists picked them.
+void lock_colours(Image& colour, const Image& work, int amount, Edges edges) {
+    const int w = work.width, h = work.height;
+    std::vector<int> diff(static_cast<std::size_t>(w) * h * 3);
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            for (int c = 0; c < 3; ++c) {
+                int sum = 0;
+                for (int dy = 0; dy < 4; ++dy)
+                    for (int dx = 0; dx < 4; ++dx) sum += colour.at(4 * x + dx, 4 * y + dy)[c];
+                // In sixteenths of a level.
+                diff[(static_cast<std::size_t>(y) * w + x) * 3 + c] = work.at(x, y)[c] * 16 - sum;
+            }
+        }
+    }
+    for (int y = 0; y < colour.height; ++y) {
+        // The texel centre under this pixel, in eighths: (y + 0.5) / 4 - 0.5.
+        const int fy = 2 * y - 3, y0 = (fy >= 0 ? fy / 8 : (fy - 7) / 8), wy = fy - 8 * y0;
+        const int ya = edge_y(y0, h, edges), yb = edge_y(y0 + 1, h, edges);
+        for (int x = 0; x < colour.width; ++x) {
+            const int fx = 2 * x - 3, x0 = (fx >= 0 ? fx / 8 : (fx - 7) / 8), wx = fx - 8 * x0;
+            const int xa = edge_x(x0, w, edges), xb = edge_x(x0 + 1, w, edges);
+            std::uint8_t* q = colour.at(x, y);
+            for (int c = 0; c < 3; ++c) {
+                const auto d = [&](int sx, int sy) { return diff[(static_cast<std::size_t>(sy) * w + sx) * 3 + c]; };
+                // Weights in 64ths, the difference in sixteenths: 1024ths of a level, times amount.
+                const long long v = static_cast<long long>((8 - wx) * (8 - wy)) * d(xa, ya) + wx * (8 - wy) * d(xb, ya) +
+                                    (8 - wx) * wy * d(xa, yb) + wx * wy * d(xb, yb);
+                const long long scaled = v * amount;  // 102400ths of a level
+                const long long add = scaled >= 0 ? (scaled + 51200) / 102400 : -((-scaled + 51200) / 102400);
+                q[c] = static_cast<std::uint8_t>(clamp(q[c] + static_cast<int>(add), 0, 255));
+            }
+        }
+    }
+}
+
+// The network's colour (4x; `given` when the page's GPU made it) with xBRZ's alpha at the same
+// scale: the network sees no alpha, and xBRZ keeps a cut-out's edges where the game has them.
+// `strength` mixes in the smooth curve, the colour lock the source's colours; 2x is 4x averaged.
+Image scale_neural(const Network* network, const Image* given, const Image& work, const Image& padded, int scale,
+                   const Options& options) {
     const bool wrap_x = repeats(options.edges, false), wrap_y = repeats(options.edges, true);
-    Image colour = neural_x4(network, work, options.denoise, wrap_x, wrap_y);
+    Image colour;
+    if (given != nullptr && given->width == work.width * 4 && given->height == work.height * 4) colour = *given;
+    else colour = neural_x4(*network, work, options.denoise, wrap_x, wrap_y);
+    if (colour.empty()) return {};
+    if (options.strength < 100) {
+        const Image smooth = scale_smooth(padded, 4, work.width, work.height);
+        for (std::size_t i = 0; i < colour.rgba.size(); i += 4) {
+            for (std::size_t c = 0; c < 3; ++c) {
+                colour.rgba[i + c] = static_cast<std::uint8_t>(
+                    (colour.rgba[i + c] * options.strength + smooth.rgba[i + c] * (100 - options.strength) + 50) / 100);
+            }
+        }
+    }
+    if (options.colour_lock > 0) lock_colours(colour, work, options.colour_lock, options.edges);
     if (scale == 2) {
         Image half(work.width * 2, work.height * 2);
         for (int y = 0; y < half.height; ++y) {
@@ -220,6 +273,20 @@ Image scale_neural(const Network& network, const Image& work, const Image& padde
     const Image alpha = scale_xbrz(padded, scale, options, work.width, work.height);
     for (std::size_t i = 3; i < colour.rgba.size(); i += 4) colour.rgba[i] = alpha.rgba[i];
     return colour;
+}
+
+// The source as the scalers see it: alpha in 0..255, a palette's steps smoothed.
+Image prepared(const Image& source, const Options& options, AlphaScale& alpha_scale, bool smooth_steps = true) {
+    Image work = source;
+    alpha_scale = options.alpha_scale;
+    // A GS texture with alpha past 128 (more than opaque, which the console allows) is scaled as
+    // it is, so no value is lost.
+    for (std::size_t i = 3; i < work.rgba.size(); i += 4) {
+        if (work.rgba[i] > 128) alpha_scale = AlphaScale::Full;
+    }
+    for (std::size_t i = 3; i < work.rgba.size(); i += 4) work.rgba[i] = alpha_to_full(work.rgba[i], alpha_scale);
+    if (smooth_steps && options.deposterize > 0) deposterize(work, options.deposterize, options.edges);
+    return work;
 }
 
 }  // namespace
@@ -241,29 +308,30 @@ Options options_from(const std::int32_t* values, int count) {
     o.sharpen = value(9, o.sharpen, 0, 100);
     o.original = value(10, o.original, 0, 100);
     o.denoise = value(11, o.denoise, 0, 100);
+    o.strength = value(12, o.strength, 0, 100);
+    o.colour_lock = value(13, o.colour_lock, 0, 100);
     return o;
 }
 
-Image upscale(const Image& source, const Options& options, const Network* network) {
+Image neural_input(const Image& source, const Options& options) {
+    AlphaScale alpha_scale;
+    return prepared(source, options, alpha_scale);
+}
+
+Image upscale(const Image& source, const Options& options, const Network* network, const Image* colour) {
     Engine engine = options.engine;
-    if (engine == Engine::Neural && (network == nullptr || network->empty())) engine = Engine::Xbrz;
+    const bool has_network = (network != nullptr && !network->empty()) || colour != nullptr;
+    if (engine == Engine::Neural && !has_network) engine = Engine::Xbrz;
     int scale = clamp(options.scale, 2, xbrz::SCALE_FACTOR_MAX);
     if (engine == Engine::Neural) scale = scale < 4 ? 2 : 4;
     if (source.empty() || source.width * scale > kMaxSide || source.height * scale > kMaxSide) {
         return {};
     }
-    // The alpha in 0..255, and the values the texture has. A GS texture with alpha past 128 (more
-    // than opaque, which the console allows) is scaled as it is, so no value is lost.
-    Image work = source;
-    AlphaScale alpha_scale = options.alpha_scale;
-    for (std::size_t i = 3; i < work.rgba.size(); i += 4) {
-        if (work.rgba[i] > 128) alpha_scale = AlphaScale::Full;
-    }
+    // The alpha in 0..255, and the values the texture has.
+    AlphaScale alpha_scale;
+    Image work = prepared(source, options, alpha_scale, false);
     std::array<bool, 256> has_alpha{};
-    for (std::size_t i = 3; i < work.rgba.size(); i += 4) {
-        work.rgba[i] = alpha_to_full(work.rgba[i], alpha_scale);
-        has_alpha[work.rgba[i]] = true;
-    }
+    for (std::size_t i = 3; i < work.rgba.size(); i += 4) has_alpha[work.rgba[i]] = true;
     std::vector<int> alphas;
     for (int a = 0; a < 256; ++a) {
         if (has_alpha[static_cast<std::size_t>(a)]) alphas.push_back(a);
@@ -298,7 +366,8 @@ Image upscale(const Image& source, const Options& options, const Network* networ
         out = scale_nearest(work, scale);
         break;
     case Engine::Neural:
-        out = scale_neural(*network, work, padded, scale, options);
+        out = scale_neural(network, colour, work, padded, scale, options);
+        if (out.empty()) return {};
         break;
     }
 
