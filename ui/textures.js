@@ -32,15 +32,15 @@ function normalize(path) {
   return out.join("/");
 }
 
-// A .glb's JSON chunk, or a .gltf's text.
-function gltfJson(bytes, path) {
-  const view = new DataView(bytes);
-  if (path.toLowerCase().endsWith(".glb")) {
-    if (view.getUint32(0, true) !== 0x46546c67) return null;
-    const length = view.getUint32(12, true);
-    return JSON.parse(new TextDecoder().decode(new Uint8Array(bytes, 20, length)));
+// A model's JSON: a .glb's first chunk (read alone, without the meshes after it), or a .gltf.
+async function gltfJson(path) {
+  if (!path.toLowerCase().endsWith(".glb")) {
+    return JSON.parse(new TextDecoder().decode(await call("read", { root: "levels", path })));
   }
-  return JSON.parse(new TextDecoder().decode(bytes));
+  const head = new DataView(await call("read", { root: "levels", path, start: 0, length: 20 }));
+  if (head.byteLength < 20 || head.getUint32(0, true) !== 0x46546c67) return null;
+  const length = head.getUint32(12, true);
+  return JSON.parse(new TextDecoder().decode(await call("read", { root: "levels", path, start: 20, length })));
 }
 
 /** How the levels' models tile each texture: path → [repeats across, repeats down]. */
@@ -48,9 +48,13 @@ async function levelWraps(files, onProgress) {
   const wraps = new Map();
   const models = files.filter((f) => /\.(gltf|glb)$/i.test(f.path));
   let done = 0;
-  for (const f of models) {
+  let next = 0;
+  const lane = async () => {
+    while (next < models.length) await one(models[next++]);
+  };
+  const one = async (f) => {
     try {
-      const doc = gltfJson(await call("read", { root: "levels", path: f.path }), f.path);
+      const doc = await gltfJson(f.path);
       const base = dirname(f.path);
       for (const t of doc?.textures ?? []) {
         const uri = doc.images?.[t.source]?.uri;
@@ -64,7 +68,8 @@ async function levelWraps(files, onProgress) {
       // A model that cannot be read: its textures tile, the default.
     }
     onProgress?.(++done, models.length);
-  }
+  };
+  await Promise.all(Array.from({ length: 8 }, lane));
   return wraps;
 }
 
