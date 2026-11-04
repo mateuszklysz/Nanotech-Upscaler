@@ -199,6 +199,29 @@ void sharpen(Image& image, int amount, Edges edges) {
     }
 }
 
+// The network's colour (4x, averaged down to 2x when asked) with xBRZ's alpha at the same scale:
+// the network sees no alpha, and xBRZ keeps a cut-out's edges where the game has them.
+Image scale_neural(const Network& network, const Image& work, const Image& padded, int scale, const Options& options) {
+    const bool wrap_x = repeats(options.edges, false), wrap_y = repeats(options.edges, true);
+    Image colour = neural_x4(network, work, options.denoise, wrap_x, wrap_y);
+    if (scale == 2) {
+        Image half(work.width * 2, work.height * 2);
+        for (int y = 0; y < half.height; ++y) {
+            for (int x = 0; x < half.width; ++x) {
+                for (int c = 0; c < 3; ++c) {
+                    const int sum = colour.at(2 * x, 2 * y)[c] + colour.at(2 * x + 1, 2 * y)[c] +
+                                    colour.at(2 * x, 2 * y + 1)[c] + colour.at(2 * x + 1, 2 * y + 1)[c];
+                    half.at(x, y)[c] = static_cast<std::uint8_t>((sum + 2) / 4);
+                }
+            }
+        }
+        colour = std::move(half);
+    }
+    const Image alpha = scale_xbrz(padded, scale, options, work.width, work.height);
+    for (std::size_t i = 3; i < colour.rgba.size(); i += 4) colour.rgba[i] = alpha.rgba[i];
+    return colour;
+}
+
 }  // namespace
 
 Options options_from(const std::int32_t* values, int count) {
@@ -207,7 +230,7 @@ Options options_from(const std::int32_t* values, int count) {
         return i < count && values != nullptr ? clamp(values[i], lo, hi) : fallback;
     };
     o.scale = value(0, o.scale, 2, xbrz::SCALE_FACTOR_MAX);
-    o.engine = static_cast<Engine>(value(1, static_cast<int>(o.engine), 0, 3));
+    o.engine = static_cast<Engine>(value(1, static_cast<int>(o.engine), 0, 4));
     o.alpha_scale = static_cast<AlphaScale>(value(2, static_cast<int>(o.alpha_scale), 0, 1));
     o.edges = static_cast<Edges>(value(3, static_cast<int>(o.edges), 0, 3));
     o.deposterize = value(4, o.deposterize, 0, 3);
@@ -217,11 +240,15 @@ Options options_from(const std::int32_t* values, int count) {
     o.direction_bias = value(8, o.direction_bias, 10, 80);
     o.sharpen = value(9, o.sharpen, 0, 100);
     o.original = value(10, o.original, 0, 100);
+    o.denoise = value(11, o.denoise, 0, 100);
     return o;
 }
 
-Image upscale(const Image& source, const Options& options) {
-    const int scale = clamp(options.scale, 2, xbrz::SCALE_FACTOR_MAX);
+Image upscale(const Image& source, const Options& options, const Network* network) {
+    Engine engine = options.engine;
+    if (engine == Engine::Neural && (network == nullptr || network->empty())) engine = Engine::Xbrz;
+    int scale = clamp(options.scale, 2, xbrz::SCALE_FACTOR_MAX);
+    if (engine == Engine::Neural) scale = scale < 4 ? 2 : 4;
     if (source.empty() || source.width * scale > kMaxSide || source.height * scale > kMaxSide) {
         return {};
     }
@@ -256,7 +283,7 @@ Image upscale(const Image& source, const Options& options) {
     }
 
     Image out;
-    switch (options.engine) {
+    switch (engine) {
     case Engine::Xbrz:
         out = scale_xbrz(padded, scale, options, work.width, work.height);
         break;
@@ -269,6 +296,9 @@ Image upscale(const Image& source, const Options& options) {
         break;
     case Engine::Nearest:
         out = scale_nearest(work, scale);
+        break;
+    case Engine::Neural:
+        out = scale_neural(*network, work, padded, scale, options);
         break;
     }
 

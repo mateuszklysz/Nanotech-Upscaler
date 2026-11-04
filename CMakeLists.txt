@@ -29,7 +29,8 @@ else()
   target_compile_options(nanotech_flags INTERFACE -ffp-contract=off -fno-fast-math -Wall -Wextra)
 endif()
 if(NANOTECH_WASM)
-  target_compile_options(nanotech_flags INTERFACE -fno-exceptions)
+  # SIMD128 for the network's sums (plain SIMD only: relaxed SIMD may round differently per system).
+  target_compile_options(nanotech_flags INTERFACE -fno-exceptions -msimd128)
 endif()
 
 add_library(xbrz STATIC third_party/xbrz/xbrz.cpp)
@@ -39,7 +40,7 @@ if(NOT MSVC)
   target_compile_options(xbrz PRIVATE -w)
 endif()
 
-add_library(nanotech_engine STATIC src/engine/image.cpp src/engine/upscale.cpp)
+add_library(nanotech_engine STATIC src/engine/image.cpp src/engine/upscale.cpp src/engine/neural.cpp)
 target_include_directories(nanotech_engine PUBLIC src PRIVATE third_party/stb)
 target_link_libraries(nanotech_engine PUBLIC nanotech_flags PRIVATE xbrz)
 

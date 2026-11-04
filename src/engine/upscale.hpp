@@ -13,6 +13,7 @@
 #include <cstdint>
 
 #include "engine/image.hpp"
+#include "engine/neural.hpp"
 
 namespace nanotech {
 
@@ -21,6 +22,7 @@ enum class Engine : int {
     Hybrid = 1,  // xBRZ on the edges, a smooth curve between them (less "painted" on photo-like textures)
     Smooth = 2,  // a smooth curve only (Catmull-Rom bicubic)
     Nearest = 3, // every texel made a square: the original as it is, larger
+    Neural = 4,  // a network (Real-ESRGAN's compact one) paints the colour 4x larger; xBRZ gives the alpha
 };
 
 enum class AlphaScale : int {
@@ -47,15 +49,17 @@ struct Options {
     int direction_bias = 40;           // xBRZ: how readily a corner is rounded, in tenths (10 to 80)
     int sharpen = 0;                   // 0 to 100: an unsharp mask after scaling
     int original = 0;                  // 0 to 100: how much of the original (its texels as squares) is mixed in
+    int denoise = 100;                 // Neural: denoise strength, 0 to 100 (under 100 keeps more of the grain)
 };
 
 // The options as they arrive from the page or the command line, in this order, each clamped to its
 // range: scale, engine, alpha scale, edges, deposterize, exact alpha (0/1), tolerance, luminance,
-// direction bias, sharpen, original. Fewer values leave the rest at their defaults.
+// direction bias, sharpen, original, denoise. Fewer values leave the rest at their defaults.
 Options options_from(const std::int32_t* values, int count);
 
 // `source` scaled by `options.scale`; an empty image when the source is empty or the result would be
-// larger than kMaxSide.
-Image upscale(const Image& source, const Options& options);
+// larger than kMaxSide. Neural needs `network` and makes 4x, or 2x (4x averaged down) when the scale
+// is under 4; without a network it is xBRZ.
+Image upscale(const Image& source, const Options& options, const Network* network = nullptr);
 
 }  // namespace nanotech

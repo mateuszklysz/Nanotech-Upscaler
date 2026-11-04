@@ -20,6 +20,7 @@ struct Result {
     std::vector<std::uint8_t> png;
 };
 Result result;
+nanotech::Network network;  // the Neural engine's, from nt_load_network
 }  // namespace
 
 NT_EXPORT(nt_alloc) void* nt_alloc(std::uint32_t size) { return std::malloc(size == 0 ? 1 : size); }
@@ -34,7 +35,7 @@ NT_EXPORT(nt_upscale) int nt_upscale(const std::uint8_t* data, std::uint32_t siz
     nanotech::Image source;
     if (!nanotech::decode_png(data, size, source)) return 1;
     result.hash = nanotech::texture_hash(source);
-    result.image = nanotech::upscale(source, nanotech::options_from(values, count));
+    result.image = nanotech::upscale(source, nanotech::options_from(values, count), &network);
     if (result.image.empty()) return 2;
     if (png != 0) result.png = nanotech::encode_png(result.image);
     return 0;
@@ -49,10 +50,17 @@ NT_EXPORT(nt_upscale_rgba) int nt_upscale_rgba(const std::uint8_t* rgba, int wid
     nanotech::Image source(width, height);
     std::copy_n(rgba, source.rgba.size(), source.rgba.data());
     result.hash = nanotech::texture_hash(source);
-    result.image = nanotech::upscale(source, nanotech::options_from(values, count));
+    result.image = nanotech::upscale(source, nanotech::options_from(values, count), &network);
     if (result.image.empty()) return 2;
     if (png != 0) result.png = nanotech::encode_png(result.image);
     return 0;
+}
+
+// The Neural engine's network (tools/convert_weights.py's file); 0 when it was read, 1 when not (the
+// engine then has none).
+NT_EXPORT(nt_load_network) int nt_load_network(const std::uint8_t* data, std::uint32_t size) {
+    network = nanotech::load_network(data, size);
+    return network.empty() ? 1 : 0;
 }
 
 // Only the name a PNG's texture has in a pack: 0 when it worked, 1 when it cannot be read.

@@ -5,10 +5,12 @@
 #pragma once
 
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
 #include "engine/image.hpp"
+#include "engine/neural.hpp"
 
 namespace nanotech::samples {
 
@@ -94,6 +96,35 @@ inline Image bricks() {
         }
     }
     return image;
+}
+
+// A small network in tools/convert_weights.py's format, its weights from a fixed sequence: conv
+// 3->4, PReLU, conv 4->48, then a second model of the same shape (the weakly denoising one).
+inline Network tiny_network() {
+    std::vector<std::uint8_t> bytes;
+    const auto u32 = [&](std::uint32_t v) {
+        for (int i = 0; i < 4; ++i) bytes.push_back(static_cast<std::uint8_t>(v >> (8 * i)));
+    };
+    std::uint32_t seed = 1;
+    const auto f32 = [&]() {
+        seed = seed * 1103515245u + 12345u;
+        const float f = static_cast<float>((seed >> 16) % 2001) / 10000.0f - 0.1f;
+        std::uint32_t bits;
+        std::memcpy(&bits, &f, 4);
+        u32(bits);
+    };
+    for (int model = 0; model < 2; ++model) {
+        bytes.insert(bytes.end(), {'N', 'T', 'N', 'N'});
+        u32(1);
+        u32(3);
+        u32(0), u32(4), u32(3);
+        for (int i = 0; i < 4 * 3 * 9 + 4; ++i) f32();
+        u32(1), u32(4), u32(4);
+        for (int i = 0; i < 4; ++i) f32();
+        u32(0), u32(48), u32(4);
+        for (int i = 0; i < 48 * 4 * 9 + 48; ++i) f32();
+    }
+    return load_network(bytes.data(), bytes.size());
 }
 
 inline std::vector<Sample> all() {

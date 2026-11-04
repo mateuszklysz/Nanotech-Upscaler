@@ -132,6 +132,26 @@ void sizes_and_limits() {
     check(nanotech::upscale(nanotech::Image(), nanotech::Options{}).empty(), "an empty texture gives nothing");
 }
 
+void neural_engine() {
+    const nanotech::Network net = nanotech::samples::tiny_network();
+    check(!net.empty(), "the network's file is read");
+    check(nanotech::load_network(nullptr, 0).empty(), "no file is no network");
+    for (const auto& sample : nanotech::samples::all()) {
+        const auto& image = sample.image;
+        std::vector<std::int32_t> values = {4, 4, 0, 1};
+        const auto opts = nanotech::options_from(values.data(), 4);
+        const nanotech::Image x4 = nanotech::upscale(image, opts, &net);
+        check(x4.width == image.width * 4 && x4.height == image.height * 4, "Neural makes 4x");
+        check(x4.rgba == nanotech::upscale(image, opts, &net).rgba, "Neural gives the same bytes twice");
+        check(alphas(x4) == alphas(scaled(image, {4, 0, 0, 1})), "Neural keeps xBRZ's alpha");
+        values[0] = 3;
+        const nanotech::Image x2 = nanotech::upscale(image, nanotech::options_from(values.data(), 4), &net);
+        check(x2.width == image.width * 2, "Neural under 4x makes 2x");
+        check(nanotech::upscale(image, opts).rgba == scaled(image, {4, 0, 0, 1}).rgba,
+              "Neural without a network is xBRZ");
+    }
+}
+
 void same_twice() {
     for (const auto& sample : nanotech::samples::all()) {
         check(scaled(sample.image, {4, 1, 0, 1, 2}).rgba == scaled(sample.image, {4, 1, 0, 1, 2}).rgba,
@@ -150,6 +170,7 @@ int main() {
     tiling_edges_meet();
     sizes_and_limits();
     same_twice();
+    neural_engine();
     if (failures == 0) std::printf("all engine checks passed\n");
     return failures == 0 ? 0 : 1;
 }

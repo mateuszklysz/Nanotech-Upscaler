@@ -8,6 +8,9 @@ panel tuned 128x128 eab8b22d23fc575e 0a6a63ae6c470d78
 panel soft-alpha 128x128 86e6b84d10fb9042 de2178698cf07e20
 panel tile-across 128x128 eddea25de0165645 2405d61ab72d7132
 panel tile-down 96x96 95876da4cbe51494 f7d676150c7f1d8f
+panel neural 128x128 01674521546d9a09 d76b1d57f2de17d6
+panel neural-x2 64x64 99b30ad5e962dc8b f8dc2330a3ca3098
+panel neural-grain 128x128 2f5d0b5db38974c7 cb18175e66e8d720
 leaf default 96x96 7fa3526b19e44b37 8ce9d6aa6a6c0cee
 leaf x2-clamp 48x48 40ebdae4f97854ff d4c07149adef46e8
 leaf x6 144x144 6a73879ab9049e07 5e0046c53ad1bc32
@@ -18,6 +21,9 @@ leaf tuned 96x96 7baaa2457470b85c c9fce686a3f88d39
 leaf soft-alpha 96x96 b49d65e0cd4a0b28 e0cfde7f2bfbc788
 leaf tile-across 96x96 c37c0b251e484753 d9cd15acbdd2d3e6
 leaf tile-down 72x72 6ad5e4e21e46fcbe 76c9a13f862b18f4
+leaf neural 96x96 58e05bb7791f34d6 9f3317fc76100574
+leaf neural-x2 48x48 395be0b441e61649 475b8fe9107bc829
+leaf neural-grain 96x96 7c24b2c73df8489a bf14c3b27619ea9d
 glow default 64x64 0bccd2e28971d31b 9be50a8d400f32ec
 glow x2-clamp 32x32 a86e1a8f62588213 34af76b03627a413
 glow x6 96x96 ea252ef5668f7b93 d44237ebbd951d38
@@ -28,6 +34,9 @@ glow tuned 64x64 e63dc5e78e516c9b 3173e13be6c5c356
 glow soft-alpha 64x64 7ff60db44d700d03 ca40ad8af3de9bea
 glow tile-across 64x64 0bccd2e28971d31b 9be50a8d400f32ec
 glow tile-down 48x48 6b313a23998ad9f3 e8342bb48f2e8a4c
+glow neural 64x64 8ecbd4793744d524 963cd3ba04c470bb
+glow neural-x2 32x32 4571f6316a59a2cb 4cc2d65afc7d4404
+glow neural-grain 64x64 0f7af7899cb1529f 9777b76732386b46
 lines default 64x64 60de6185eec81823 b70a5d901efac200
 lines x2-clamp 32x32 c1334fff8e24e5a3 74f989d0215bf5ad
 lines x6 96x96 9c4ab7a1f264d463 8bf8c33419793a3e
@@ -38,6 +47,9 @@ lines tuned 64x64 504dc87566531413 330d11d84022dbb5
 lines soft-alpha 64x64 f7bff55de7e9f03b eb91e90556b98d87
 lines tile-across 64x64 60de6185eec81823 b70a5d901efac200
 lines tile-down 48x48 086c58775ef2c4c3 6624dcc79a832d42
+lines neural 64x64 7675e12a21b38a51 1f0aa0cdbee74221
+lines neural-x2 32x32 59901ce2496338ba 11b9b57ab92c1f06
+lines neural-grain 64x64 b23fc33666a020b5 26ba7d375767066a
 bricks default 128x64 dc152c2b93a3c147 e9dbf3099c0349a5
 bricks x2-clamp 64x32 0e03ec113b0baa0f 15c16376e5c80c51
 bricks x6 192x96 d2364a491568fe3f ce903b5d110ea728
@@ -48,3 +60,6 @@ bricks tuned 128x64 033f5b9fa1768022 43cb971207eb34be
 bricks soft-alpha 128x64 bec25cf1c3d3d32f 99810d82b5da27fd
 bricks tile-across 128x64 3f49cecb415d415c 5172f30622bfe5a2
 bricks tile-down 96x48 92a40241fc3b1480 4118b07ae1a78631
+bricks neural 128x64 c555673ba9fb58f4 a6870094b1286c6e
+bricks neural-x2 64x32 f5c9b1cf598772e6 f7e09922336049b0
+bricks neural-grain 128x64 7885db98a297cc3c cd105f2129ed1a4d
