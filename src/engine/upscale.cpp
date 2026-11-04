@@ -18,13 +18,20 @@ constexpr int kPad = 4;
 
 int clamp(int v, int lo, int hi) { return std::min(std::max(v, lo), hi); }
 
-// A coordinate inside a side of `n` texels, by the texture's edges.
-int edge(int v, int n, Edges edges) {
-    if (edges == Edges::Repeat) {
+// A coordinate inside a side of `n` texels, by the texture's edges on that axis.
+bool repeats(Edges edges, bool vertical) {
+    return edges == Edges::Repeat || edges == (vertical ? Edges::RepeatY : Edges::RepeatX);
+}
+
+int edge(int v, int n, Edges edges, bool vertical) {
+    if (repeats(edges, vertical)) {
         return ((v % n) + n) % n;
     }
     return clamp(v, 0, n - 1);
 }
+
+int edge_x(int v, int n, Edges edges) { return edge(v, n, edges, false); }
+int edge_y(int v, int n, Edges edges) { return edge(v, n, edges, true); }
 
 // The 2D layer's alpha (0..128 is 0..1, the console's) to 0..255 and back; every value from 0 to
 // 128 comes back as it was (tests/alpha_test.cpp).
@@ -49,10 +56,10 @@ void deposterize(Image& image, int strength, Edges edges) {
                 for (int x = 0; x < image.width; ++x) {
                     const int dx = axis == 0 ? 1 : 0, dy = axis == 0 ? 0 : 1;
                     const std::uint8_t* l =
-                        before.at(edge(x - dx, image.width, edges), edge(y - dy, image.height, edges));
+                        before.at(edge_x(x - dx, image.width, edges), edge_y(y - dy, image.height, edges));
                     const std::uint8_t* c = before.at(x, y);
                     const std::uint8_t* r =
-                        before.at(edge(x + dx, image.width, edges), edge(y + dy, image.height, edges));
+                        before.at(edge_x(x + dx, image.width, edges), edge_y(y + dy, image.height, edges));
                     if (l[3] == 0 || c[3] == 0 || r[3] == 0) continue;
                     std::uint8_t* out = image.at(x, y);
                     for (int ch = 0; ch < 3; ++ch) {
@@ -182,7 +189,7 @@ void sharpen(Image& image, int amount, Edges edges) {
                 for (int j = -1; j <= 1; ++j) {
                     for (int i = -1; i <= 1; ++i) {
                         blur += kKernel[j + 1][i + 1]
-                                * before.at(edge(x + i, image.width, edges), edge(y + j, image.height, edges))[ch];
+                                * before.at(edge_x(x + i, image.width, edges), edge_y(y + j, image.height, edges))[ch];
                     }
                 }
                 const int c = before.at(x, y)[ch];
@@ -202,7 +209,7 @@ Options options_from(const std::int32_t* values, int count) {
     o.scale = value(0, o.scale, 2, xbrz::SCALE_FACTOR_MAX);
     o.engine = static_cast<Engine>(value(1, static_cast<int>(o.engine), 0, 3));
     o.alpha_scale = static_cast<AlphaScale>(value(2, static_cast<int>(o.alpha_scale), 0, 1));
-    o.edges = static_cast<Edges>(value(3, static_cast<int>(o.edges), 0, 1));
+    o.edges = static_cast<Edges>(value(3, static_cast<int>(o.edges), 0, 3));
     o.deposterize = value(4, o.deposterize, 0, 3);
     o.exact_alpha = value(5, o.exact_alpha ? 1 : 0, 0, 1) != 0;
     o.tolerance = value(6, o.tolerance, 5, 60);
@@ -242,8 +249,9 @@ Image upscale(const Image& source, const Options& options) {
     Image padded(work.width + 2 * kPad, work.height + 2 * kPad);
     for (int y = 0; y < padded.height; ++y) {
         for (int x = 0; x < padded.width; ++x) {
-            std::copy_n(work.at(edge(x - kPad, work.width, options.edges), edge(y - kPad, work.height, options.edges)), 4,
-                        padded.at(x, y));
+            const int sx = edge_x(x - kPad, work.width, options.edges);
+            const int sy = edge_y(y - kPad, work.height, options.edges);
+            std::copy_n(work.at(sx, sy), 4, padded.at(x, y));
         }
     }
 
@@ -275,6 +283,9 @@ Image upscale(const Image& source, const Options& options) {
         }
     }
 
+    // No alpha past the source's own (the bicubic curve overshoots): a texture with none under
+    // 250 stays opaque to the port.
+    const int lowest = alphas.front(), highest = alphas.back();
     // A cut-out keeps its alpha values only: the port decides from them how the texture is drawn
     // (a level's texture with no alpha under 250 is opaque, scene/level.cpp).
     const bool exact = options.exact_alpha && alphas.size() <= 4;
@@ -287,6 +298,8 @@ Image upscale(const Image& source, const Options& options) {
                     if (std::abs(a - p[3]) <= std::abs(best - p[3])) best = a;
                 }
                 p[3] = static_cast<std::uint8_t>(best);
+            } else {
+                p[3] = static_cast<std::uint8_t>(clamp(p[3], lowest, highest));
             }
             // A transparent texel keeps the colour the game's filtering blends in at its edge.
             if (p[3] == 0) {

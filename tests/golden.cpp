@@ -26,6 +26,8 @@ int main() {
         {"nearest", {3, 3}},
         {"tuned", {4, 0, 0, 1, 2, 1, 15, 200, 20, 40, 25}},
         {"soft-alpha", {4, 1, 0, 1, 0, 0}},
+        {"tile-across", {4, 0, 0, 2}},
+        {"tile-down", {3, 2, 0, 3}},
     };
     // Every value, so a GS sample can be told its alpha scale and edges.
     const std::vector<std::int32_t> defaults = {4, 0, 0, 1, 0, 1, 30, 100, 40, 0, 0};

@@ -84,6 +84,11 @@ void opaque_stays_opaque() {
                   == std::set<int>{255},
               "an opaque texture stays opaque");
     }
+    // Nearly opaque with more than 4 values (no exact alpha): the curve's overshoot stays inside.
+    nanotech::Image almost = nanotech::samples::panel();
+    for (std::size_t i = 3; i < almost.rgba.size(); i += 4) almost.rgba[i] = static_cast<std::uint8_t>(250 + i / 4 % 6);
+    const std::set<int> kept = alphas(scaled(almost, {4, 2}));
+    check(*kept.begin() >= 250 && *kept.rbegin() <= 255, "alpha stays inside the source's");
 }
 
 // A transparent texel keeps the colour of the texel it came from, which the game's filtering

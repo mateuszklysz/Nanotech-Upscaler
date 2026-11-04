@@ -31,6 +31,8 @@ enum class AlphaScale : int {
 enum class Edges : int {
     Clamp = 0,   // the texture stops at its edge (the HUD, the font, the effects)
     Repeat = 1,  // the texture tiles (the world): its edges are scaled with the other side's texels
+    RepeatX = 2, // it tiles across only (glTF wrapS repeat, wrapT clamp)
+    RepeatY = 3, // it tiles down only
 };
 
 struct Options {

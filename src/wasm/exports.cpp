@@ -3,6 +3,7 @@
 // What the mod's page calls in nanotech.wasm (ui/engine.js). The page copies a texture's PNG into
 // memory from nt_alloc, asks for it upscaled, and reads the result back from the getters; one
 // result is kept at a time, until the next call.
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <vector>
@@ -32,6 +33,21 @@ NT_EXPORT(nt_upscale) int nt_upscale(const std::uint8_t* data, std::uint32_t siz
     result = Result{};
     nanotech::Image source;
     if (!nanotech::decode_png(data, size, source)) return 1;
+    result.hash = nanotech::texture_hash(source);
+    result.image = nanotech::upscale(source, nanotech::options_from(values, count));
+    if (result.image.empty()) return 2;
+    if (png != 0) result.png = nanotech::encode_png(result.image);
+    return 0;
+}
+
+// The same from RGBA texels in memory (`width` * `height` * 4 bytes): the page's own pictures
+// that explain the options. 2 for a texture too large.
+NT_EXPORT(nt_upscale_rgba) int nt_upscale_rgba(const std::uint8_t* rgba, int width, int height,
+                                               const std::int32_t* values, int count, int png) {
+    result = Result{};
+    if (width <= 0 || height <= 0 || width > nanotech::kMaxSide || height > nanotech::kMaxSide) return 2;
+    nanotech::Image source(width, height);
+    std::copy_n(rgba, source.rgba.size(), source.rgba.data());
     result.hash = nanotech::texture_hash(source);
     result.image = nanotech::upscale(source, nanotech::options_from(values, count));
     if (result.image.empty()) return 2;
