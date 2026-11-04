@@ -405,3 +405,17 @@ progress {
 #close-up[aria-pressed="true"] {
   border-color: var(--amber);
 }
+
+.device {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  align-items: center;
+  margin: 0 0 12px;
+}
+.device .note {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85em;
+}

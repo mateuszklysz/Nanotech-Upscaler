@@ -5,8 +5,8 @@
 
     tools/package.py <nanotech.wasm> [-o dist]
 
-One folder, nanotech-upscaler-<version>/, with the manifest, the licence, the page (ui/) and the
-engine built for it. The same archive serves every system: the page runs in the launcher.
+One folder, nanotech-upscaler-<version>/, with the manifest, the licence, the page (ui/), the
+engine built for it and the networks (ui/models/, tools/fetch_models.py). The same archive serves every system: the page runs in the launcher.
 Standard library only.
 """
 from __future__ import annotations
@@ -19,7 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 # What the page is made of; anything else in ui/ (an editor's files) stays out.
-PAGE_FILES = {".html", ".js", ".css", ".svg", ".png", ".jpg", ".webp", ".json", ".woff2"}
+PAGE_FILES = {".html", ".js", ".css", ".svg", ".png", ".jpg", ".webp", ".json", ".woff2", ".bin"}
 # A fixed time for every entry, so the same files make the same archive.
 STAMP = (2026, 1, 1, 0, 0, 0)
 
@@ -33,6 +33,10 @@ def main() -> int:
     page = manifest["tool"]["page"]
     if not (ROOT / page).is_file():
         print(f"package: the manifest's page {page} is missing", file=sys.stderr)
+        return 1
+    missing = [m for m in ("general", "anime", "detailed") if not (ROOT / "ui" / "models" / f"{m}.bin").is_file()]
+    if missing:
+        print(f"package: ui/models/ lacks {', '.join(missing)} (run tools/fetch_models.py)", file=sys.stderr)
         return 1
     if not args.wasm.is_file():
         print(f"package: {args.wasm} is missing (build it first)", file=sys.stderr)

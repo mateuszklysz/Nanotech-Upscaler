@@ -3,6 +3,7 @@
 // The engines the page works with: one worker per core it may use (fewer on a phone, where each
 // one's memory counts), or the page itself when workers cannot start.
 import { loadEngine } from "./engine.js";
+import { handle } from "./jobs.js";
 
 export function workerCount(system) {
   const cores = navigator.hardwareConcurrency || 2;
@@ -95,19 +96,7 @@ export class Pool {
   }
 
   async #runLocal(job) {
-    const nt = await this.local;
-    if (job.kind === "skip") {
-      this.skip = new Set(job.names);
-      return null;
-    }
-    if (job.kind === "rgba") return nt.upscaleRgba(job.rgba, job.width, job.height, job.values);
-    const png = new Uint8Array(job.png);
-    if (job.kind === "name") return { name: nt.name(png) };
-    if (job.skipKnown) {
-      const name = nt.name(png);
-      if (name === null) return { error: "unreadable" };
-      if (this.skip?.has(name)) return { name, skipped: true };
-    }
-    return nt.upscale(png, job.values, { asPng: job.asPng });
+    this.context ??= { skip: new Set() };
+    return handle(await this.local, job, this.context);
   }
 }

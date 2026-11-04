@@ -4,7 +4,8 @@
 import { call, inLauncher } from "./bridge.js";
 import { setupPad } from "./pad.js";
 import { Pool, workerCount } from "./pool.js";
-import { BUILT_IN, clean, DEFAULTS, engineValues, OPTIONS, shown } from "./options.js";
+import { BUILT_IN, clean, DEFAULTS, engineValues, modelFile, OPTIONS, shown } from "./options.js";
+import { Upscaler } from "./upscaler.js";
 import { SAMPLES } from "./samples.js";
 import { loadModel, RatchetView } from "./ratchet.js";
 import { collect } from "./textures.js";
@@ -22,7 +23,10 @@ const state = {
   info: null,
   pool: null,
   values: { ...DEFAULTS },
-  preset: "Faithful",
+  preset: "Clean",
+  upscaler: null,
+  useGpu: true, // the GPU when there is one; off: the CPU, the same bytes on every system
+  advanced: false,
   presets: [], // the player's own: [{name, values}]
   textures: { world: [], interface: [], effects: [] },
   include: { world: true, interface: true, effects: true },
@@ -146,7 +150,7 @@ function showValues() {
     if (o.type === "bool") input.checked = v;
     else input.value = String(v);
     value.textContent = o.type === "bool" ? "" : shown(o, v);
-    card.hidden = o.when ? !o.when(state.values) : false;
+    card.hidden = (o.when ? !o.when(state.values) : false) || (o.advanced && !state.advanced);
     const engineHint = o.type === "choice" ? ` ${o.choices.find((c) => c.value === v)?.hint ?? ""}` : "";
     about.textContent = o.hint + engineHint;
   }
@@ -170,11 +174,43 @@ function settingsChanged() {
   changeTimer = setTimeout(() => {
     void call("storeSet", {
       key: "current",
-      value: { preset: state.preset, values: state.values, include: state.include },
+      value: {
+        preset: state.preset,
+        values: state.values,
+        include: state.include,
+        useGpu: state.useGpu,
+        advanced: state.advanced,
+      },
     });
     void drawOptionPictures();
     void drawPreview();
   }, 180);
+}
+
+/** One texture upscaled with `values` (the page's settings), on the GPU or the CPU. */
+function upscale(job, values, { urgent = false, transfer = [] } = {}) {
+  const failedBefore = state.upscaler.gpuFailed;
+  return state.upscaler
+    .run({ ...job, model: modelFile(values) }, { useGpu: state.useGpu, urgent, transfer })
+    .finally(() => {
+      if (state.upscaler.gpuFailed !== failedBefore) showDevice();
+    });
+}
+
+function showDevice() {
+  const note = $("device-note");
+  const gpu = state.upscaler?.gpu;
+  $("use-gpu").checked = state.useGpu;
+  $("use-gpu").disabled = !gpu;
+  $("advanced").checked = state.advanced;
+  if (!gpu) note.textContent = "No graphics card this page can use: the processor makes every texture (slower).";
+  else if (state.upscaler.gpuFailed)
+    note.textContent = `The graphics card stopped (${state.upscaler.gpuFailed}): the processor took over.`;
+  else if (state.useGpu)
+    note.textContent =
+      "The graphics card runs the model. Off: the processor, slower, with the same bytes on every device.";
+  else
+    note.textContent = "The processor runs the model: the same bytes on every device, slower than the graphics card.";
 }
 
 // Each option's picture: its sample with the option at its contrast, and at its value.
@@ -186,10 +222,9 @@ async function drawOptionPictures() {
     if (card.hidden) continue;
     const sample = SAMPLES[o.sample];
     const now = { ...state.values };
-    if (o.engineFor) now.engine = o.engineFor(now);
     const other = { ...now, [o.key]: o.contrast(now) };
     const run = (v) =>
-      state.pool.run(
+      upscale(
         {
           kind: "rgba",
           rgba: new Uint8Array(sample.rgba),
@@ -197,8 +232,8 @@ async function drawOptionPictures() {
           height: sample.height,
           values: engineValues(v, sample.alpha, sample.edges),
         },
-        [],
-        true,
+        v,
+        { urgent: true },
       );
     const [a, b] = await Promise.all([run(other), run(now)]);
     if (round !== pictureRound) return;
@@ -393,10 +428,10 @@ async function drawRatchet() {
     }
     const upscaled = [];
     for (const [path, t] of ratchet.originals) {
-      const out = await state.pool.run(
+      const out = await upscale(
         { kind: "png", png: t.png.slice(0), values: engineValues(state.values, 0, 1), asPng: false, keepRgba: true },
-        [],
-        true,
+        state.values,
+        { urgent: true },
       );
       if (round !== ratchet.round) return;
       if (out.rgba) upscaled.push([path, out]);
@@ -424,7 +459,7 @@ async function drawPreview() {
     const gs = texture.alpha === 1;
     paint(view.before, shown, gs);
     view.aspect(shown.width, shown.height);
-    const out = await state.pool.run(
+    const out = await upscale(
       {
         kind: "png",
         png: bytes,
@@ -432,8 +467,8 @@ async function drawPreview() {
         asPng: false,
         keepRgba: true,
       },
-      [bytes],
-      true,
+      state.values,
+      { urgent: true, transfer: [bytes] },
     );
     if (round !== preview.round) return;
     if (out.error) {
@@ -529,7 +564,7 @@ function status(text, error = false) {
   p.classList.toggle("error", error);
 }
 
-const settingsKey = () => JSON.stringify(engineValues(state.values, 0, 0));
+const settingsKey = () => JSON.stringify([modelFile(state.values), ...engineValues(state.values, 0, 0)]);
 const presetLabel = () => state.preset || "Custom";
 
 function minutes(ms) {
@@ -596,9 +631,10 @@ async function makePack(onlyNew) {
       if (job.cancelled) return;
       if (t.name && (names.has(t.name) || worldNames.has(t.name))) return tick();
       const bytes = await call("read", { root: t.root, path: t.path });
-      const out = await state.pool.run(
+      const out = await upscale(
         { kind: "png", png: bytes, values: values(t), asPng: true, skipKnown: !t.name },
-        [bytes],
+        state.values,
+        { transfer: [bytes] },
       );
       if (job.cancelled) return;
       // A dumped texture is named by its file; a level's by the engine, as the port names it.
@@ -671,6 +707,7 @@ async function start() {
   preview.view = compare($("preview"));
   state.info = await call("info");
   state.pool = new Pool(workerCount(state.info.system));
+  state.upscaler = new Upscaler(state.pool);
 
   const [current, presets] = await Promise.all([
     call("storeGet", { key: "current" }).catch(() => null),
@@ -688,7 +725,11 @@ async function start() {
       : "";
     for (const g of GROUPS)
       if (typeof current.include?.[g.key] === "boolean") state.include[g.key] = current.include[g.key];
+    if (typeof current.useGpu === "boolean") state.useGpu = current.useGpu;
+    if (typeof current.advanced === "boolean") state.advanced = current.advanced;
   }
+  await state.upscaler.ready;
+  showDevice();
   showValues();
   showPresets();
   void drawOptionPictures();
@@ -740,6 +781,18 @@ $("close-up").addEventListener("click", () => {
   if (!ratchet.view) return;
   ratchet.view.close = !ratchet.view.close;
   $("close-up").setAttribute("aria-pressed", String(ratchet.view.close));
+});
+$("use-gpu").addEventListener("change", () => {
+  state.useGpu = $("use-gpu").checked;
+  showDevice();
+  settingsChanged();
+});
+$("advanced").addEventListener("change", () => {
+  state.advanced = $("advanced").checked;
+  showValues();
+  showDevice();
+  settingsChanged();
+  void drawOptionPictures();
 });
 $("make").addEventListener("click", () => void makePack(false));
 $("make-new").addEventListener("click", () => void makePack(true));

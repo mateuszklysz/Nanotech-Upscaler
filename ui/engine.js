@@ -22,7 +22,73 @@ export async function loadEngine(url) {
   const hash = () =>
     ((BigInt(nt.nt_hash_hi() >>> 0) << 32n) | BigInt(nt.nt_hash_lo() >>> 0)).toString(16).padStart(16, "0");
 
+  const valuesIn = (values) => {
+    const at = nt.nt_alloc(values.length * 4);
+    new Int32Array(nt.memory.buffer, at, values.length).set(values);
+    return at;
+  };
+  const texels = () => {
+    const width = nt.nt_width();
+    const height = nt.nt_height();
+    return {
+      width,
+      height,
+      rgba: new Uint8ClampedArray(nt.memory.buffer.slice(nt.nt_rgba(), nt.nt_rgba() + width * height * 4)),
+    };
+  };
+  let network = null; // the name of the network loaded
+
   return {
+    /** Loads a network file (models/<name>.bin) as the Neural engine's, unless it is loaded. */
+    loadNetwork(name, bytes) {
+      if (network === name) return true;
+      const at = copyIn(bytes);
+      const status = nt.nt_load_network(at, bytes.length);
+      nt.nt_free(at);
+      network = status === 0 ? name : null;
+      return status === 0;
+    },
+
+    /**
+     * What the network is given for a texture (`data`: a PNG, or RGBA texels when `width` is
+     * set), for the GPU: {name, width, height, rgba} or {error}.
+     */
+    neuralInput(data, width, height, values) {
+      const at = copyIn(data);
+      const valuesAt = valuesIn(values);
+      const status = nt.nt_neural_input(at, data.length, width, height, valuesAt, values.length);
+      nt.nt_free(at);
+      nt.nt_free(valuesAt);
+      if (status !== 0) return { error: "unreadable" };
+      return { name: hash(), ...texels() };
+    },
+
+    /** nt_upscale with the GPU's 4x colour; the same result as upscale. */
+    upscaleColour(data, width, height, values, colour, { asPng = true } = {}) {
+      const at = copyIn(data);
+      const colourAt = copyIn(colour);
+      const valuesAt = valuesIn(values);
+      const status = nt.nt_upscale_colour(
+        at,
+        data.length,
+        width,
+        height,
+        valuesAt,
+        values.length,
+        asPng ? 1 : 0,
+        colourAt,
+      );
+      nt.nt_free(at);
+      nt.nt_free(colourAt);
+      nt.nt_free(valuesAt);
+      if (status !== 0) return { error: status === 1 ? "unreadable" : "too-large" };
+      return {
+        name: hash(),
+        ...texels(),
+        png: asPng ? new Uint8Array(nt.memory.buffer.slice(nt.nt_png(), nt.nt_png() + nt.nt_png_size())) : null,
+      };
+    },
+
     /** The name a PNG's texture has in a pack (16 hex digits), or null when it cannot be read. */
     name(png) {
       const at = copyIn(png);

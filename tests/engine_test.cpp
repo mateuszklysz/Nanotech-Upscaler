@@ -158,6 +158,23 @@ void neural_engine() {
     }
 }
 
+// A large texture goes through the network in tiles; their edges must not show. A texture that
+// repeats every 40 texels, tiling across, must still repeat every 160 pixels at 4x.
+void tiles_do_not_show() {
+    const nanotech::Network net = nanotech::samples::tiny_network();
+    nanotech::Image image(640, 12);
+    for (int y = 0; y < image.height; ++y)
+        for (int x = 0; x < image.width; ++x)
+            nanotech::samples::put(image, x, y, (x % 40) * 6, (y * 20 + (x % 40) * 3) % 256, (x % 40) < 20 ? 30 : 220, 255);
+    const nanotech::Image out = nanotech::neural_x4(net, image, 100, true, true);
+    check(out.width == 2560 && out.height == 48, "a large texture is made whole");
+    bool repeats = !out.empty();
+    for (int y = 0; y < out.height && repeats; ++y)
+        for (int x = 160; x < out.width && repeats; ++x)
+            for (int c = 0; c < 4; ++c) repeats = repeats && out.at(x, y)[c] == out.at(x - 160, y)[c];
+    check(repeats, "the tiles of a large texture meet without a seam");
+}
+
 void same_twice() {
     for (const auto& sample : nanotech::samples::all()) {
         check(scaled(sample.image, {4, 1, 0, 1, 2}).rgba == scaled(sample.image, {4, 1, 0, 1, 2}).rgba,
@@ -177,6 +194,7 @@ int main() {
     sizes_and_limits();
     same_twice();
     neural_engine();
+    tiles_do_not_show();
     if (failures == 0) std::printf("all engine checks passed\n");
     return failures == 0 ? 0 : 1;
 }

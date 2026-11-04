@@ -9,9 +9,12 @@
 namespace nanotech {
 namespace {
 
-// Texels added around the texture before the network sees it (the edge's few rows are what is
-// left of its view there), cropped off after.
-constexpr int kMargin = 8;
+// Texels added around the texture (or a tile of it) before the network sees it, cropped off after:
+// the texture's own neighbours, so its edges and the tiles' meet (the GPU's tiles have the same).
+constexpr int kMargin = 16;
+// The largest tile, margin included: a 256 texture is one tile, a 512 one a few. PLKSR-Rep's
+// buffers for one are about 150 MB, which a phone's three workers can hold.
+constexpr int kTileSide = 300;
 constexpr int kBuffers = 16;
 
 std::uint32_t u32(const std::uint8_t* p) {
@@ -89,56 +92,84 @@ struct Buffer {
     std::vector<float> data;  // [y][x][channel]
 };
 
-// One convolution, zero outside the w x h area (as PyTorch pads it), and what follows it.
+// Outputs o0..o0+N of four pixels in a row (`row`: the first one's top-left tap in the padded
+// source), their sums held in registers: bias, then each tap and channel in order.
+template <int N>
+void conv_block(const Op& op, const float* row, int pw, int ci, int co, int o0, float* acc) {
+    float s[4][N];
+    for (int j = 0; j < 4; ++j)
+        for (int i = 0; i < N; ++i) s[j][i] = op.bias[static_cast<std::size_t>(o0 + i)];
+    for (int ky = 0; ky < op.k; ++ky) {
+        for (int kx = 0; kx < op.k; ++kx) {
+            const float* in = row + (static_cast<std::size_t>(ky) * pw + kx) * ci;
+            const float* wk = &op.weights[static_cast<std::size_t>(ky * op.k + kx) * ci * co + o0];
+            for (int c = 0; c < ci; ++c) {
+                const float* wr = wk + static_cast<std::size_t>(c) * co;
+                for (int j = 0; j < 4; ++j) {
+                    const float v = in[j * ci + c];
+                    for (int i = 0; i < N; ++i) s[j][i] += v * wr[i];
+                }
+            }
+        }
+    }
+    for (int j = 0; j < 4; ++j)
+        for (int i = 0; i < N; ++i) acc[static_cast<std::size_t>(j) * co + o0 + i] = s[j][i];
+}
+
+// One convolution, zero outside the w x h area (as PyTorch pads it), and what follows it. Four
+// pixels of a row at a time share each weight's load; every output's sum still runs bias, then
+// taps and channels in one order (a zero outside adds nothing), so the bytes do not change.
 void run_conv(const Op& op, const Buffer& src, const Buffer* aux, Buffer& dst, int w, int h) {
     const int ci = op.in, co = op.out, r = op.k / 2;
     const int extra = op.pass ? src.channels - ci : 0;
-    dst.channels = co + extra;
-    dst.data.assign(static_cast<std::size_t>(w) * h * dst.channels, 0.0f);
-    std::vector<float> acc(static_cast<std::size_t>(co));
+    // The source's first `ci` channels with `r` zeros around them.
+    const int pw = w + 2 * r + 3, ph = h + 2 * r;
+    std::vector<float> padded(static_cast<std::size_t>(pw) * ph * ci, 0.0f);
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
-            std::copy(op.bias.begin(), op.bias.end(), acc.begin());
-            for (int ky = 0; ky < op.k; ++ky) {
-                const int sy = y + ky - r;
-                if (sy < 0 || sy >= h) continue;
-                for (int kx = 0; kx < op.k; ++kx) {
-                    const int sx = x + kx - r;
-                    if (sx < 0 || sx >= w) continue;
-                    const float* in = &src.data[(static_cast<std::size_t>(sy) * w + sx) * src.channels];
-                    const float* wk = &op.weights[static_cast<std::size_t>(ky * op.k + kx) * ci * co];
-                    for (int c = 0; c < ci; ++c) {
-                        const float v = in[c];
-                        const float* wr = wk + static_cast<std::size_t>(c) * co;
-                        for (int o = 0; o < co; ++o) acc[static_cast<std::size_t>(o)] += v * wr[o];
+            std::copy_n(&src.data[(static_cast<std::size_t>(y) * w + x) * src.channels], ci,
+                        &padded[(static_cast<std::size_t>(y + r) * pw + x + r) * ci]);
+        }
+    }
+    dst.channels = co + extra;
+    dst.data.assign(static_cast<std::size_t>(w) * h * dst.channels, 0.0f);
+    constexpr int kRun = 4;
+    std::vector<float> acc(static_cast<std::size_t>(co) * kRun);
+    const int chunk = co % 8 == 0 ? 8 : co % 4 == 0 ? 4 : 1;
+    for (int y = 0; y < h; ++y) {
+        for (int x0 = 0; x0 < w; x0 += kRun) {
+            const float* row = &padded[(static_cast<std::size_t>(y) * pw + x0) * ci];
+            for (int o0 = 0; o0 < co; o0 += chunk) {
+                if (chunk == 8) conv_block<8>(op, row, pw, ci, co, o0, acc.data());
+                else if (chunk == 4) conv_block<4>(op, row, pw, ci, co, o0, acc.data());
+                else conv_block<1>(op, row, pw, ci, co, o0, acc.data());
+            }
+            for (int j = 0; j < kRun && x0 + j < w; ++j) {
+                const std::size_t at = static_cast<std::size_t>(y) * w + x0 + j;
+                float* out = &dst.data[at * dst.channels];
+                const float* side = aux ? &aux->data[at * aux->channels] : nullptr;
+                const float* sum = acc.data() + static_cast<std::size_t>(j) * co;
+                for (int o = 0; o < co; ++o) {
+                    float v = sum[o];
+                    switch (op.act) {
+                    case Act::None:
+                        break;
+                    case Act::Prelu:
+                        if (v < 0.0f) v *= op.slopes[static_cast<std::size_t>(o)];
+                        break;
+                    case Act::Gelu:
+                        v = static_cast<float>(0.5 * v * (1.0 + exact_erf(v * 0.70710678118654752)));
+                        break;
+                    case Act::Gate:
+                        v = side[o] * static_cast<float>(1.0 / (1.0 + exact_exp(-static_cast<double>(v))));
+                        break;
+                    case Act::Add:
+                        v += side[o];
+                        break;
                     }
+                    out[o] = v;
                 }
-            }
-            const std::size_t at = static_cast<std::size_t>(y) * w + x;
-            float* out = &dst.data[at * dst.channels];
-            const float* side = aux ? &aux->data[at * aux->channels] : nullptr;
-            for (int o = 0; o < co; ++o) {
-                float v = acc[static_cast<std::size_t>(o)];
-                switch (op.act) {
-                case Act::None:
-                    break;
-                case Act::Prelu:
-                    if (v < 0.0f) v *= op.slopes[static_cast<std::size_t>(o)];
-                    break;
-                case Act::Gelu:
-                    v = static_cast<float>(0.5 * v * (1.0 + exact_erf(v * 0.70710678118654752)));
-                    break;
-                case Act::Gate:
-                    v = side[o] * static_cast<float>(1.0 / (1.0 + exact_exp(-static_cast<double>(v))));
-                    break;
-                case Act::Add:
-                    v += side[o];
-                    break;
-                }
-                out[o] = v;
-            }
-            if (extra > 0) {
-                std::copy_n(&src.data[at * src.channels + ci], extra, out + co);
+                if (extra > 0) std::copy_n(&src.data[at * src.channels + ci], extra, out + co);
             }
         }
     }
@@ -195,6 +226,61 @@ Network load_network(const std::uint8_t* data, std::size_t size) {
     return net;
 }
 
+namespace {
+
+// The ops over one tile of `rgb` (x, y, w, h) and its margin, its 4x result put into `out`.
+bool run_tile(const std::vector<Op>& ops, const Image& rgb, int x0, int y0, int tw, int th, bool wrap_x, bool wrap_y,
+              Image& out) {
+    const int w = tw + 2 * kMargin, h = th + 2 * kMargin;
+    const auto pick = [](int v, int n, bool wrap) { return wrap ? ((v % n) + n) % n : std::clamp(v, 0, n - 1); };
+    std::vector<Buffer> buffers(kBuffers);
+    Buffer& input = buffers[0];
+    input.channels = 3;
+    input.data.resize(static_cast<std::size_t>(w) * h * 3);
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const std::uint8_t* p =
+                rgb.at(pick(x0 + x - kMargin, rgb.width, wrap_x), pick(y0 + y - kMargin, rgb.height, wrap_y));
+            for (int c = 0; c < 3; ++c) {
+                input.data[(static_cast<std::size_t>(y) * w + x) * 3 + c] = static_cast<float>(p[c]) / 255.0f;
+            }
+        }
+    }
+    for (const Op& op : ops) {
+        if (!op.shuffle) {
+            const Buffer& src = buffers[static_cast<std::size_t>(op.src)];
+            const bool has_aux = op.act == Act::Gate || op.act == Act::Add;
+            const Buffer* aux = has_aux ? &buffers[static_cast<std::size_t>(op.aux)] : nullptr;
+            if (src.channels < op.in || (aux && aux->channels < op.out)) return false;
+            Buffer result;
+            run_conv(op, src, aux, result, w, h);
+            buffers[static_cast<std::size_t>(op.dst)] = std::move(result);
+            continue;
+        }
+        // 48 channels: pixel shuffle (c * 16 + dy * 4 + dx) to 4x, plus the input's squares.
+        const Buffer& a = buffers[static_cast<std::size_t>(op.src)];
+        const Buffer& in = buffers[static_cast<std::size_t>(op.aux)];
+        if (a.channels != 48 || in.channels != 3) return false;
+        for (int y = 0; y < th * 4; ++y) {
+            for (int x = 0; x < tw * 4; ++x) {
+                const int sx = x / 4 + kMargin, sy = y / 4 + kMargin;
+                const std::size_t at = static_cast<std::size_t>(sy) * w + sx;
+                std::uint8_t* q = out.at(x0 * 4 + x, y0 * 4 + y);
+                for (int c = 0; c < 3; ++c) {
+                    const float v = a.data[at * 48 + static_cast<std::size_t>(c * 16 + (y % 4) * 4 + (x % 4))] +
+                                    in.data[at * 3 + c];
+                    q[c] = static_cast<std::uint8_t>(std::clamp(v * 255.0f + 0.5f, 0.0f, 255.0f));
+                }
+                q[3] = 255;
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
+}  // namespace
+
 Image neural_x4(const Network& net, const Image& rgb, int denoise, bool wrap_x, bool wrap_y) {
     if (net.empty() || rgb.empty()) return {};
     // The ops to run: the model's, or blended with the second, weakly denoising one (each weight
@@ -217,52 +303,19 @@ Image neural_x4(const Network& net, const Image& rgb, int denoise, bool wrap_x, 
         ops = &blended;
     }
 
-    const int w = rgb.width + 2 * kMargin, h = rgb.height + 2 * kMargin;
-    const auto pick = [](int v, int n, bool wrap) { return wrap ? ((v % n) + n) % n : std::clamp(v, 0, n - 1); };
-    std::vector<Buffer> buffers(kBuffers);
-    Buffer& input = buffers[0];
-    input.channels = 3;
-    input.data.resize(static_cast<std::size_t>(w) * h * 3);
-    for (int y = 0; y < h; ++y) {
-        for (int x = 0; x < w; ++x) {
-            const std::uint8_t* p = rgb.at(pick(x - kMargin, rgb.width, wrap_x), pick(y - kMargin, rgb.height, wrap_y));
-            for (int c = 0; c < 3; ++c) {
-                input.data[(static_cast<std::size_t>(y) * w + x) * 3 + c] = static_cast<float>(p[c]) / 255.0f;
+    // The texture in tiles (one, unless it is large) with kMargin of its own neighbours around
+    // each, so a worker's memory stays small: every tile and op the same order, the same bytes.
+    const int tw = rgb.width + 2 * kMargin <= kTileSide ? rgb.width : kTileSide - 2 * kMargin;
+    const int th = rgb.height + 2 * kMargin <= kTileSide ? rgb.height : kTileSide - 2 * kMargin;
+    Image out(rgb.width * 4, rgb.height * 4);
+    for (int ty = 0; ty < rgb.height; ty += th) {
+        for (int tx = 0; tx < rgb.width; tx += tw) {
+            if (!run_tile(*ops, rgb, tx, ty, std::min(tw, rgb.width - tx), std::min(th, rgb.height - ty), wrap_x, wrap_y, out)) {
+                return {};
             }
         }
     }
-    for (const Op& op : *ops) {
-        if (!op.shuffle) {
-            const Buffer& src = buffers[static_cast<std::size_t>(op.src)];
-            const bool has_aux = op.act == Act::Gate || op.act == Act::Add;
-            const Buffer* aux = has_aux ? &buffers[static_cast<std::size_t>(op.aux)] : nullptr;
-            if (src.channels < op.in || (aux && aux->channels < op.out)) return {};
-            Buffer result;
-            run_conv(op, src, aux, result, w, h);
-            buffers[static_cast<std::size_t>(op.dst)] = std::move(result);
-            continue;
-        }
-        // 48 channels: pixel shuffle (c * 16 + dy * 4 + dx) to 4x, plus the input's squares.
-        const Buffer& a = buffers[static_cast<std::size_t>(op.src)];
-        const Buffer& in = buffers[static_cast<std::size_t>(op.aux)];
-        if (a.channels != 48 || in.channels != 3) return {};
-        Image out(rgb.width * 4, rgb.height * 4);
-        for (int y = 0; y < out.height; ++y) {
-            for (int x = 0; x < out.width; ++x) {
-                const int sx = x / 4 + kMargin, sy = y / 4 + kMargin;
-                const std::size_t at = static_cast<std::size_t>(sy) * w + sx;
-                std::uint8_t* q = out.at(x, y);
-                for (int c = 0; c < 3; ++c) {
-                    const float v = a.data[at * 48 + static_cast<std::size_t>(c * 16 + (y % 4) * 4 + (x % 4))] +
-                                    in.data[at * 3 + c];
-                    q[c] = static_cast<std::uint8_t>(std::clamp(v * 255.0f + 0.5f, 0.0f, 255.0f));
-                }
-                q[3] = 255;
-            }
-        }
-        return out;
-    }
-    return {};
+    return out;
 }
 
 }  // namespace nanotech

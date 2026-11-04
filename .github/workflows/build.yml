@@ -120,6 +120,9 @@ jobs:
           done
           (cd out && sha256sum -- *.png > ../sums-wasm.txt)
           cat sums-wasm.txt
+      - name: Networks
+        # Real-ESRGAN's and PLKSR-Rep's weights, each checked against its pinned SHA-256.
+        run: python3 tools/fetch_models.py --cache build/weights
       - name: Package
         run: |
           python3 tools/package.py build/nanotech.wasm -o dist

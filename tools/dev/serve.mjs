@@ -80,4 +80,4 @@ createServer(async (req, res) => {
     res.statusCode = 404;
     res.end(String(e.message));
   }
-}).listen(Number(args.port ?? 8766), () => console.log(`http://localhost:${args.port ?? 8766}/`));
+}).listen(Number(args.port ?? 8766), "127.0.0.1", () => console.log(`http://127.0.0.1:${args.port ?? 8766}/`));
