@@ -19,7 +19,8 @@ export async function loadEngine(url) {
     new Uint8Array(nt.memory.buffer, at, bytes.length).set(bytes);
     return at;
   };
-  const hash = () => ((BigInt(nt.nt_hash_hi() >>> 0) << 32n) | BigInt(nt.nt_hash_lo() >>> 0)).toString(16).padStart(16, "0");
+  const hash = () =>
+    ((BigInt(nt.nt_hash_hi() >>> 0) << 32n) | BigInt(nt.nt_hash_lo() >>> 0)).toString(16).padStart(16, "0");
 
   return {
     /** The name a PNG's texture has in a pack (16 hex digits), or null when it cannot be read. */
@@ -28,6 +29,25 @@ export async function loadEngine(url) {
       const status = nt.nt_hash(at, png.length);
       nt.nt_free(at);
       return status === 0 ? hash() : null;
+    },
+
+    /** RGBA texels (`width` * `height` * 4) upscaled the same way: the page's own pictures. */
+    upscaleRgba(rgba, width, height, values) {
+      const rgbaAt = copyIn(rgba);
+      const valuesAt = nt.nt_alloc(values.length * 4);
+      new Int32Array(nt.memory.buffer, valuesAt, values.length).set(values);
+      const status = nt.nt_upscale_rgba(rgbaAt, width, height, valuesAt, values.length, 0);
+      nt.nt_free(rgbaAt);
+      nt.nt_free(valuesAt);
+      if (status !== 0) return { error: "too-large" };
+      const w = nt.nt_width();
+      const h = nt.nt_height();
+      return {
+        name: hash(),
+        width: w,
+        height: h,
+        rgba: new Uint8ClampedArray(nt.memory.buffer.slice(nt.nt_rgba(), nt.nt_rgba() + w * h * 4)),
+      };
     },
 
     /**
