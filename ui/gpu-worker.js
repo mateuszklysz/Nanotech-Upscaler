@@ -15,8 +15,13 @@ self.postMessage({ ready: gpu !== null });
 const networks = new Map();
 let loaded = null;
 
-self.onmessage = async ({ data }) => {
-  const { id, job } = data;
+// One job at a time: the network's buffers are shared, and a job waits for the GPU between draws.
+let queue = Promise.resolve();
+self.onmessage = ({ data }) => {
+  queue = queue.then(() => work(data));
+};
+
+async function work({ id, job }) {
   try {
     if (!networks.has(job.model)) {
       const response = await fetch(new URL(`models/${job.model}.bin`, import.meta.url));
@@ -32,4 +37,4 @@ self.onmessage = async ({ data }) => {
   } catch (e) {
     self.postMessage({ id, error: String(e?.message ?? e) });
   }
-};
+}

@@ -8,7 +8,8 @@
 const TILE = 128; // a tile's side on the GPU, margin included
 const MARGIN = 16; // texels of real neighbours around each tile (the CPU's whole texture has 8)
 const INNER = TILE - 2 * MARGIN;
-const WIDTH = 4096; // the weight texture's width, in texels
+const WIDTH = 2048; // the weight texture's width, in texels (WebGL2 promises 2048)
+const SETTLE_EVERY = 4; // convolutions sent before waiting for the GPU
 
 const VERTEX = `#version 300 es
 void main() {
@@ -162,6 +163,17 @@ function blended(net, strength) {
   });
 }
 
+// Lets other work run, without setTimeout's 4 ms floor for nested timers.
+const channel = new MessageChannel();
+const waiting = [];
+channel.port1.onmessage = () => waiting.shift()?.();
+function yieldTask() {
+  return new Promise((resolve) => {
+    waiting.push(resolve);
+    channel.port2.postMessage(0);
+  });
+}
+
 export class GpuNetwork {
   /** A GPU network on `canvas` (an OffscreenCanvas or a canvas), or null when WebGL2 cannot run it. */
   static create(canvas) {
@@ -264,6 +276,7 @@ export class GpuNetwork {
       return { ...op, ci4, co4, base, biasAt: bias, slopesAt: slopes };
     });
     const rows = Math.ceil(size / WIDTH);
+    if (rows > this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE)) throw new Error("the network is too big for this GPU");
     const data = new Float32Array(WIDTH * rows * 4);
     for (const op of placed) {
       if (op.shuffle) continue;
@@ -296,17 +309,17 @@ export class GpuNetwork {
     const gl = this.gl;
     const fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
     gl.flush();
-    for (;;) {
-      const state = gl.clientWaitSync(fence, 0, 0);
-      if (state === gl.ALREADY_SIGNALED || state === gl.CONDITION_SATISFIED) break;
-      if (state === gl.WAIT_FAILED) break;
-      if (gl.isContextLost()) {
-        gl.deleteSync(fence);
-        throw new Error("the graphics card was reset");
+    try {
+      for (let tries = 0; ; tries++) {
+        const state = gl.clientWaitSync(fence, 0, 0);
+        if (state !== gl.TIMEOUT_EXPIRED) break; // done, or the wait failed
+        if (gl.isContextLost()) throw new Error("the graphics card was reset");
+        // A quick look first; then a timer, so a long draw does not keep a core busy.
+        await (tries < 2 ? yieldTask() : new Promise((resolve) => setTimeout(resolve, 2)));
       }
-      await new Promise((resolve) => setTimeout(resolve, 1));
+    } finally {
+      gl.deleteSync(fence);
     }
-    gl.deleteSync(fence);
   }
 
   #target(id, first, n) {
@@ -348,6 +361,7 @@ export class GpuNetwork {
     gl.bindVertexArray(this.vao);
     gl.viewport(0, 0, TILE, TILE);
     gl.disable(gl.BLEND);
+    let sent = 0;
     for (let ty = 0; ty < height; ty += INNER) {
       for (let tx = 0; tx < width; tx += INNER) {
         // The tile and its margin: the texture's own neighbours, by its edges.
@@ -383,7 +397,8 @@ export class GpuNetwork {
             gl.drawArrays(gl.TRIANGLES, 0, 3);
             break;
           }
-          await this.#settle();
+          if (++sent % SETTLE_EVERY === 0) await this.#settle();
+          else gl.flush();
           const { p, u } = this.programs.conv;
           gl.useProgram(p);
           this.#bind(0, gl.TEXTURE_2D_ARRAY, this.buffers.get(op.src).texture);
@@ -420,6 +435,7 @@ export class GpuNetwork {
             }
           }
         }
+        await this.#settle();
         gl.readPixels(0, 0, INNER * 4, INNER * 4, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
         const w = Math.min(INNER, width - tx) * 4;
         const h = Math.min(INNER, height - ty) * 4;
