@@ -175,6 +175,72 @@ void tiles_do_not_show() {
     check(repeats, "the tiles of a large texture meet without a seam");
 }
 
+// Network files that are broken in every way are refused, never read past their end or used
+// with a buffer number out of range; a network that runs but makes NaN still gives bytes.
+void broken_networks() {
+    const std::vector<std::uint8_t> file = nanotech::samples::tiny_network_file();
+    const nanotech::Image panel = nanotech::samples::panel();
+    bool ok = true;
+    for (std::size_t n = 0; n < file.size(); n += 7) {
+        const nanotech::Network net = nanotech::load_network(file.data(), n);
+        // Cut inside the second model: the first is kept, without a denoise model.
+        if (!net.empty()) ok = ok && net.denoise.empty() && !nanotech::neural_x4(net, panel, 50, false, false).empty();
+    }
+    check(ok, "a file cut short is refused, or keeps only its whole first model");
+    const auto changed = [&](std::size_t at, std::uint32_t v) {
+        std::vector<std::uint8_t> bytes = file;
+        for (int i = 0; i < 4; ++i) bytes[at + i] = static_cast<std::uint8_t>(v >> (8 * i));
+        return nanotech::load_network(bytes.data(), bytes.size());
+    };
+    // The header, then the first op: kind, k, in, out, src, dst, act, aux, pass.
+    check(changed(4, 1).empty() && changed(8, 0).empty() && changed(8, 3).empty(), "a bad header is refused");
+    check(changed(12, 0).empty() && changed(12, 0xFFFFFFFFu).empty(), "a model of no ops or too many is refused");
+    for (const std::uint32_t bad : {0x80000000u, 0xFFFFFFFFu, 16u}) {
+        check(changed(16 + 4 * 4, bad).empty() && changed(16 + 5 * 4, bad).empty() && changed(16 + 7 * 4, bad).empty(),
+              "a buffer number out of range is refused");
+        check(changed(16 + 1 * 4, bad).empty() && changed(16 + 2 * 4, bad).empty() && changed(16 + 3 * 4, bad).empty(),
+              "a size out of range is refused");
+    }
+    check(changed(16, 2).empty() && changed(16 + 6 * 4, 5).empty() && changed(16 + 1 * 4, 2).empty(),
+          "an unknown op, activation or an even kernel is refused");
+    // The first op reads buffer 0 with 3 channels; one that reads a buffer nothing wrote fails.
+    check(changed(16 + 2 * 4, 4).empty(), "the input has 3 channels");
+    // The second op's src (after the first op's 9 fields, 216 weights, 8 biases and 8 slopes).
+    const nanotech::Network unwritten = changed(16 + 9 * 4 + (8 * 3 * 9 + 8 + 8) * 4 + 4 * 4, 9);
+    check(!unwritten.empty() && nanotech::neural_x4(unwritten, panel, 100, false, false).empty(),
+          "a network that reads a buffer nothing wrote makes nothing");
+    // NaN in every weight: each byte is defined (0), the same on every system.
+    std::vector<std::uint8_t> nan = file;
+    for (std::size_t at = 16 + 9 * 4; at + 4 <= 16 + 9 * 4 + 4 * 8; at += 4) {
+        const std::uint32_t q = 0x7FC00000u;
+        for (int i = 0; i < 4; ++i) nan[at + i] = static_cast<std::uint8_t>(q >> (8 * i));
+    }
+    const nanotech::Image made = nanotech::neural_x4(nanotech::load_network(nan.data(), nan.size()), panel, 100, false, false);
+    bool zero = !made.empty();
+    for (std::size_t i = 0; i < made.rgba.size() && zero; i += 4) zero = made.rgba[i] == 0 && made.rgba[i + 3] == 255;
+    check(zero, "NaN becomes 0, not an undefined byte");
+}
+
+// The smallest textures, and denoise past its range.
+void neural_edges() {
+    const nanotech::Network net = nanotech::samples::tiny_network();
+    nanotech::Image one(1, 1);
+    nanotech::samples::put(one, 0, 0, 200, 100, 50, 255);
+    for (const bool wrap : {false, true}) {
+        const nanotech::Image out = nanotech::neural_x4(net, one, 100, wrap, wrap);
+        check(out.width == 4 && out.height == 4, "a 1x1 texture makes 4x4");
+    }
+    nanotech::Image thin(1, 300);
+    check(nanotech::neural_x4(net, thin, 100, false, true).height == 1200, "a 1-wide, many-tile texture is whole");
+    const nanotech::Image panel = nanotech::samples::panel();
+    check(nanotech::neural_x4(net, panel, -5, false, false).rgba == nanotech::neural_x4(net, panel, 0, false, false).rgba &&
+              nanotech::neural_x4(net, panel, 500, false, false).rgba ==
+                  nanotech::neural_x4(net, panel, 100, false, false).rgba,
+          "denoise past 0..100 is clamped");
+    check(nanotech::neural_x4(net, nanotech::Image(), 100, false, false).empty(), "an empty texture makes nothing");
+    check(nanotech::neural_x4(nanotech::Network{}, panel, 100, false, false).empty(), "no network makes nothing");
+}
+
 void same_twice() {
     for (const auto& sample : nanotech::samples::all()) {
         check(scaled(sample.image, {4, 1, 0, 1, 2}).rgba == scaled(sample.image, {4, 1, 0, 1, 2}).rgba,
@@ -195,6 +261,8 @@ int main() {
     same_twice();
     neural_engine();
     tiles_do_not_show();
+    broken_networks();
+    neural_edges();
     if (failures == 0) std::printf("all engine checks passed\n");
     return failures == 0 ? 0 : 1;
 }

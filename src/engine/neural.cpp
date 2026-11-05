@@ -49,14 +49,19 @@ bool read_model(const std::uint8_t*& p, const std::uint8_t* end, std::vector<Op>
         if (kind == 1) {
             if (end - p < 8) return false;
             op.shuffle = true;
+            if (u32(p) >= kBuffers || u32(p + 4) >= kBuffers) return false;
             op.src = static_cast<int>(u32(p));
             op.aux = static_cast<int>(u32(p + 4));
             p += 8;
-            if (op.src >= kBuffers || op.aux >= kBuffers) return false;
             out.push_back(std::move(op));
             continue;
         }
         if (kind != 0 || end - p < 32) return false;
+        // Sizes and buffer numbers are checked as read (unsigned), before they become ints.
+        if (u32(p) > 31 || u32(p + 4) > 512 || u32(p + 8) > 512 || u32(p + 12) >= kBuffers || u32(p + 16) >= kBuffers ||
+            u32(p + 24) >= kBuffers) {
+            return false;
+        }
         op.k = static_cast<int>(u32(p));
         op.in = static_cast<int>(u32(p + 4));
         op.out = static_cast<int>(u32(p + 8));
@@ -66,8 +71,7 @@ bool read_model(const std::uint8_t*& p, const std::uint8_t* end, std::vector<Op>
         op.aux = static_cast<int>(u32(p + 24));
         op.pass = u32(p + 28) != 0;
         p += 32;
-        if (op.k < 1 || op.k > 31 || op.k % 2 == 0 || op.in < 1 || op.in > 512 || op.out < 1 || op.out > 512 ||
-            op.src >= kBuffers || op.dst >= kBuffers || op.aux >= kBuffers || op.dst == op.src || act > 4) {
+        if (op.k < 1 || op.k % 2 == 0 || op.in < 1 || op.out < 1 || op.dst == op.src || act > 4) {
             return false;
         }
         op.act = static_cast<Act>(act);
@@ -269,7 +273,9 @@ bool run_tile(const std::vector<Op>& ops, const Image& rgb, int x0, int y0, int 
                 for (int c = 0; c < 3; ++c) {
                     const float v = a.data[at * 48 + static_cast<std::size_t>(c * 16 + (y % 4) * 4 + (x % 4))] +
                                     in.data[at * 3 + c];
-                    q[c] = static_cast<std::uint8_t>(std::clamp(v * 255.0f + 0.5f, 0.0f, 255.0f));
+                    // NaN (a broken network) becomes 0: a float cast to a byte outside 0..255 is undefined.
+                    const float b = v * 255.0f + 0.5f;
+                    q[c] = b >= 255.0f ? 255 : b > 0.0f ? static_cast<std::uint8_t>(b) : 0;
                 }
                 q[3] = 255;
             }

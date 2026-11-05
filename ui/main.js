@@ -630,7 +630,14 @@ async function makePack(onlyNew) {
     const one = async (t) => {
       if (job.cancelled) return;
       if (t.name && (names.has(t.name) || worldNames.has(t.name))) return tick();
-      const bytes = await call("read", { root: t.root, path: t.path });
+      let bytes;
+      try {
+        bytes = await call("read", { root: t.root, path: t.path });
+      } catch {
+        // Gone since the list was made (the game dumped over it): the rest of the pack goes on.
+        failed++;
+        return tick();
+      }
       const out = await upscale(
         { kind: "png", png: bytes, values: values(t), asPng: true, skipKnown: !t.name },
         state.values,
@@ -678,7 +685,10 @@ async function makePack(onlyNew) {
       status("Not saved.");
       return;
     }
-    await call("storeSet", { key: madeKey, value: { settings: settingsKey(), names: [...names] } });
+    // Only for "only new textures" next time: the pack is saved even if this cannot be kept.
+    await call("storeSet", { key: madeKey, value: { settings: settingsKey(), names: [...names] } }).catch(
+      () => undefined,
+    );
     status(
       `Saved ${saved}: ${added.length} textures in ${minutes(performance.now() - started)}${failed ? `, ${failed} could not be read` : ""}. Add it in Texture packs.`,
     );

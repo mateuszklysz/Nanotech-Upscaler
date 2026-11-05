@@ -101,7 +101,9 @@ inline Image bricks() {
 // A small network in tools/convert_weights.py's format, its weights from a fixed sequence: conv
 // 3->8 PReLU, conv 8->8 GELU, a 5x5 on the first 4 channels (the rest passed), a gate, a 1x1 plus
 // the skip, conv 8->48, the shuffle; then a second model of the same shape (the weakly denoising one).
-inline Network tiny_network() {
+// A small network's file with every kind of op (PReLU, GELU, a 5x5 pass, a gate, a skip), two
+// models of the same shape.
+inline std::vector<std::uint8_t> tiny_network_file() {
     std::vector<std::uint8_t> bytes;
     const auto u32 = [&](std::uint32_t v) {
         for (int i = 0; i < 4; ++i) bytes.push_back(static_cast<std::uint8_t>(v >> (8 * i)));
@@ -133,6 +135,11 @@ inline Network tiny_network() {
         conv(3, 8, 48, 5, 6, 0, 0, 0);
         for (const int v : {1, 6, 0}) u32(static_cast<std::uint32_t>(v));
     }
+    return bytes;
+}
+
+inline Network tiny_network() {
+    const std::vector<std::uint8_t> bytes = tiny_network_file();
     return load_network(bytes.data(), bytes.size());
 }
 
