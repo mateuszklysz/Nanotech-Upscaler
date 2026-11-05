@@ -1,0 +1,40 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- The launcher's side of a mod's page (launcher/src/lib/modTool.ts), for working on the page. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Nanotech Upscaler (dev host)</title>
+    <style>
+      body {
+        margin: 0;
+        background: #12121a;
+        color: #c3cdea;
+        font: 13px system-ui;
+      }
+      nav {
+        display: flex;
+        gap: 6px;
+        padding: 6px 10px;
+        align-items: center;
+      }
+      iframe {
+        border: 0;
+        width: 100%;
+        height: calc(100vh - 40px);
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <nav>
+      Pad:
+      <button data-pad="up">Up</button><button data-pad="down">Down</button> <button data-pad="left">Left</button
+      ><button data-pad="right">Right</button> <button data-pad="accept">Accept</button
+      ><button data-pad="back">Back</button> <button data-pad="prev">Prev</button><button data-pad="next">Next</button>
+      <span id="said"></span>
+    </nav>
+    <iframe id="page" src="/ui/index.html"></iframe>
+    <script type="module" src="host.js"></script>
+  </body>
+</html>

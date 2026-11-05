@@ -1,0 +1,17 @@
+{
+  "format": 2,
+  "id": "nanotech-upscaler",
+  "name": "Nanotech Upscaler",
+  "version": "0.1.0",
+  "author": "Mateusz Kłysz",
+  "description": "Upscales every texture of Ratchet & Clank on your own device into a texture pack, in the game's own style.",
+  "license": "GPL-3.0-or-later",
+  "homepage": "https://github.com/mateuszklysz/nanotech-upscaler",
+  "games": {
+    "rac1": ["pal", "ntsc"],
+    "rac2": ["ntsc"]
+  },
+  "tool": {
+    "page": "ui/index.html"
+  }
+}
