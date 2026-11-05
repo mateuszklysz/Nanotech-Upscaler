@@ -37,12 +37,14 @@ only on the player's own device.
 
 ## The same bytes everywhere
 
-A texture and its options must give the same PNG on every system and in the launcher's
-WebAssembly, so a pack made on a phone is the pack made on a PC. The engine uses integers, or
-doubles without fused multiply-adds and fast maths (`CMakeLists.txt`), and one thread per
-texture. `tests/golden.txt` holds the result of every sample with every engine; CI checks it on
-Windows, Linux, macOS and in WebAssembly, and compares the native and WebAssembly PNGs byte for
-byte. A change that is meant to make other bytes updates the file:
+A texture and its options must give the same PNG on every system and in the WebAssembly, so a pack
+made on a phone matches one made on a PC (on the processor; the GPU path is close, not exact). So
+the engine uses integers, or floats with no fused multiply-adds and no fast maths
+(`CMakeLists.txt`), its own `exp` and `erf`, sums in a fixed order and one thread per texture.
+
+`tests/golden.txt` holds the result of every sample with every engine. CI checks it on Windows,
+Linux, macOS and in WebAssembly, and compares their PNGs byte for byte. If a change is meant to
+give other bytes, update the file:
 
 ```sh
 cmake -DUPDATE=ON -DPROGRAM=build/golden -DEXPECTED=tests/golden.txt -P tests/compare.cmake
