@@ -6,7 +6,7 @@
 import { onPad } from "./bridge.js";
 
 function focusables() {
-  return [...document.querySelectorAll("button, select, input, [tabindex='0']")].filter(
+  return [...document.querySelectorAll("button, select, input, summary, [tabindex='0']")].filter(
     (el) => !el.disabled && el.offsetParent !== null && !el.closest("[hidden]"),
   );
 }
@@ -74,7 +74,7 @@ export function setupPad(back) {
         break;
       case "accept":
         if (el instanceof HTMLInputElement && el.type === "checkbox") el.click();
-        else if (el instanceof HTMLButtonElement) el.click();
+        else if (el instanceof HTMLButtonElement || el.tagName === "SUMMARY") el.click();
         else if (!el) move(1);
         break;
       case "prev":

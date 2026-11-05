@@ -9,7 +9,6 @@
 // - the effects: the rest of the dump (Shared/, Animated/) that is not a level's texture, in the
 //   GS scale too.
 import { call } from "./bridge.js";
-import { findRatchet } from "./ratchet.js";
 
 const REPEAT = 10497;
 const HASH_NAME = /^([0-9a-f]{16})\.png$/;
@@ -109,7 +108,6 @@ export async function collect(onProgress) {
     interface: interfaceTextures,
     effects,
     levelsFound: world.length > 0,
-    ratchet: findRatchet(levels),
     dumpFound: dump.length > 0,
   };
 }

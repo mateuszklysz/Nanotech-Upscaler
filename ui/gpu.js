@@ -350,8 +350,9 @@ export class GpuNetwork {
    * `wrapX`/`wrapY`: the texture tiles. `denoise`: the denoise strength in percent. Each draw
    * is waited for before the next, so the GPU is never held long: the game's launcher, the page
    * and the phone's own screen draw in between (and a slow phone's GPU watchdog never fires).
+   * `onTile` is called after each tile, to show the job is moving.
    */
-  async run(rgba, width, height, { wrapX = false, wrapY = false, denoise = 100 } = {}) {
+  async run(rgba, width, height, { wrapX = false, wrapY = false, denoise = 100, onTile } = {}) {
     const gl = this.gl;
     const { ops, texture: weights } = this.#weights(denoise);
     const out = new Uint8Array(width * 4 * height * 4 * 4);
@@ -442,6 +443,7 @@ export class GpuNetwork {
         for (let y = 0; y < h; y++) {
           out.set(pixels.subarray(y * INNER * 16, y * INNER * 16 + w * 4), ((ty * 4 + y) * width * 4 + tx * 4) * 4);
         }
+        onTile?.();
       }
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);

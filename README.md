@@ -24,7 +24,7 @@ A page in OpenRAC's launcher that makes a texture pack from the game's own textu
 
 - **Every texture:** the levels' textures from your disc, plus the HUD, font and effects the game dumps while you play.
 - **Neural upscaling:** three networks. **General** (Real-ESRGAN, the default), **Cartoon** (Real-ESRGAN anime) and **Detailed** (PLKSR-Rep from NTIRE 2026, slower). Cut-outs keep sharp edges.
-- **Settings and presets:** model, scale, noise removal, strength, original colours, sharpening and more, each shown on a before and after picture. Built-in presets, or save your own.
+- **Settings and presets:** model, scale, noise removal, strength, original colours, sharpening and more, with a before and after preview of the game's own textures. Built-in presets, or save your own.
 - **On your device, offline:** Windows, Linux, macOS and Android. The graphics card runs the network (WebGL2). With it off, the processor gives the same bytes on every system.
 - **No game data in this repository:** the mod reads your textures where they are and writes the pack there.
 

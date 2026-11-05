@@ -18,6 +18,42 @@ const store = {
     }
   },
 };
+// The launcher's colours (info.theme, then "theme" events): its own, and a theme with an accent.
+const THEMES = [
+  {
+    "--ink": "#181820",
+    "--ink-deep": "#12121a",
+    "--panel": "#1d1d28",
+    "--panel-hi": "#22222f",
+    "--text": "#e8f0ff",
+    "--body": "#c3cdea",
+    "--dim": "#8f9ac4",
+    "--line": "rgb(156 161 212 / 0.22)",
+    "--line-strong": "rgb(156 161 212 / 0.35)",
+    "--amber": "#ffb443",
+    "--brand": "#d58a00",
+    "--bar-top": "#e5a013",
+    "--bar-bottom": "#cd8300",
+    "--bar-ink-deep": "#1b1206",
+  },
+  {
+    "--ink": "#282828",
+    "--ink-deep": "#1d2021",
+    "--panel": "#32302f",
+    "--panel-hi": "#3c3836",
+    "--text": "#fbf1c7",
+    "--body": "#ebdbb2",
+    "--dim": "#a89984",
+    "--line": "rgb(168 153 132 / 0.22)",
+    "--line-strong": "rgb(168 153 132 / 0.36)",
+    "--amber": "#7fcff5",
+    "--brand": "#43a3de",
+    "--bar-top": "#7fcdf5",
+    "--bar-bottom": "#43a3de",
+    "--bar-ink-deep": "#03141f",
+  },
+];
+let theme = 0;
 const saving = new Map();
 let token = 0;
 
@@ -35,6 +71,7 @@ async function answer(call, args) {
         packId: "rac1-ntsc",
         system: "desktop",
         mod: { id: "nanotech-upscaler", name: "Nanotech Upscaler", version: "dev" },
+        theme: THEMES[theme],
       };
     case "list":
       return (await fetch(`/api/list?root=${args.root}`)).json();
@@ -101,3 +138,8 @@ for (const b of document.querySelectorAll("[data-pad]")) {
     frame.contentWindow.postMessage({ openrac: 1, event: "pad", button: b.dataset.pad, down: false }, "*");
   });
 }
+
+document.getElementById("theme").addEventListener("click", () => {
+  theme = (theme + 1) % THEMES.length;
+  frame.contentWindow.postMessage({ openrac: 1, event: "theme", theme: THEMES[theme] }, "*");
+});
