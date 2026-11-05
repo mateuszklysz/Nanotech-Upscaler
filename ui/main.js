@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (c) 2026 Mateusz Kłysz
-// The mod's page: the settings and their pictures, the presets, the preview, and the pack.
-import { call, inLauncher } from "./bridge.js";
+// The mod's page: one texture before and after, the settings and presets, and the pack.
+import { call, inLauncher, onTheme } from "./bridge.js";
 import { setupPad } from "./pad.js";
 import { Pool, workerCount } from "./pool.js";
 import { BUILT_IN, clean, DEFAULTS, engineValues, modelFile, OPTIONS, shown } from "./options.js";
 import { Upscaler } from "./upscaler.js";
-import { SAMPLES } from "./samples.js";
-import { loadModel, RatchetView } from "./ratchet.js";
 import { collect } from "./textures.js";
+import { applyTheme } from "./theme.js";
 import { ZipWriter } from "./zip.js";
 
 const $ = (id) => document.getElementById(id);
@@ -17,24 +16,41 @@ const GROUPS = [
   { key: "interface", name: "HUD, menus and font" },
   { key: "effects", name: "Effects" },
 ];
-const STRIP_SIZE = 14;
 
 const state = {
   info: null,
   pool: null,
+  upscaler: null,
   values: { ...DEFAULTS },
   preset: "Clean",
-  upscaler: null,
   useGpu: true, // the GPU when there is one; off: the CPU, the same bytes on every system
-  advanced: false,
+  more: false, // "More options" open
   presets: [], // the player's own: [{name, values}]
   textures: { world: [], interface: [], effects: [] },
   include: { world: true, interface: true, effects: true },
   group: "world",
   index: 0,
-  mode: "texture", // the preview: "texture" or "ratchet"
-  making: null,
+  ready: false, // the textures are listed
+  making: null, // the pack being made: {cancelled, token}
 };
+
+// ---------------------------------------------------------------------------------------------
+// Messages
+
+function status(text, error = false) {
+  const p = $("status");
+  p.textContent = text;
+  p.classList.toggle("error", error);
+}
+
+function minutes(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s} s`;
+  const m = Math.floor(s / 60);
+  return m < 60 ? `${m} min ${s % 60} s` : `${Math.floor(m / 60)} h ${m % 60} min`;
+}
+
+const message = (e) => String(e?.message ?? e);
 
 // ---------------------------------------------------------------------------------------------
 // Pictures
@@ -51,8 +67,7 @@ function paint(canvas, { width, height, rgba }, gs = false) {
   canvas.getContext("2d").putImageData(new ImageData(texels, width, height), 0, 0);
 }
 
-/** A PNG's texels as the browser decodes it (for showing only: the engine decodes its own). */
-async function decodeForShow(bytes) {
+async function decode(bytes) {
   const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }), {
     premultiplyAlpha: "none",
     colorSpaceConversion: "none",
@@ -60,39 +75,23 @@ async function decodeForShow(bytes) {
   const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
   const g = canvas.getContext("2d");
   g.drawImage(bitmap, 0, 0);
-  const { data } = g.getImageData(0, 0, bitmap.width, bitmap.height);
-  return { width: bitmap.width, height: bitmap.height, rgba: data };
+  bitmap.close();
+  const { data } = g.getImageData(0, 0, canvas.width, canvas.height);
+  return { width: canvas.width, height: canvas.height, rgba: data };
 }
 
-/** A before-and-after box in `root`: { before, after, labels(left, right), busy(on) }. */
-function compare(root, split = 50) {
-  root.classList.add("compare");
-  root.style.setProperty("--split", `${split}%`);
-  root.innerHTML = "";
-  const before = Object.assign(document.createElement("canvas"), { className: "before" });
-  const after = Object.assign(document.createElement("canvas"), { className: "after" });
-  const line = Object.assign(document.createElement("div"), { className: "line" });
-  const range = Object.assign(document.createElement("input"), { type: "range", min: 0, max: 100, value: split });
-  range.setAttribute("aria-label", "Before and after");
+/** The before-and-after box: the original left of the line, the upscaled right; their captions
+ *  under it. */
+function compare(root) {
+  const make = (tag, props) => Object.assign(document.createElement(tag), props);
+  const before = make("canvas", { className: "before" });
+  const after = make("canvas", { className: "after", hidden: true });
+  const line = make("div", { className: "line" });
+  const range = make("input", { type: "range", min: 0, max: 100, value: 50 });
+  range.setAttribute("aria-label", "Move the line between the original and the upscaled");
   range.addEventListener("input", () => root.style.setProperty("--split", `${range.value}%`));
-  const left = Object.assign(document.createElement("span"), { className: "label left", textContent: "Original" });
-  const right = Object.assign(document.createElement("span"), { className: "label right", textContent: "Upscaled" });
-  const busy = Object.assign(document.createElement("span"), { className: "busy", textContent: "…", hidden: true });
-  root.append(before, after, line, range, left, right, busy);
-  return {
-    before,
-    after,
-    labels(l, r) {
-      left.textContent = l;
-      right.textContent = r;
-    },
-    busy(on) {
-      busy.hidden = !on;
-    },
-    aspect(width, height) {
-      root.style.aspectRatio = `${width} / ${height}`;
-    },
-  };
+  root.append(before, after, line, range);
+  return { before, after, left: $("before-label"), right: $("after-label") };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -101,45 +100,37 @@ function compare(root, split = 50) {
 const optionViews = new Map();
 
 function buildOptions() {
-  const list = $("options");
-  list.innerHTML = "";
   for (const o of OPTIONS) {
-    const card = document.createElement("div");
-    card.className = "option";
-    const head = document.createElement("div");
-    head.className = "head";
-    const name = document.createElement("span");
-    name.textContent = o.name;
-    const value = document.createElement("span");
-    value.className = "value";
-    head.append(name, value);
-
-    const control = document.createElement("div");
-    control.className = "control";
+    const card = Object.assign(document.createElement("div"), { className: "option" });
+    const id = `option-${o.key}`;
     let input;
-    if (o.type === "range") {
-      input = Object.assign(document.createElement("input"), { type: "range", min: o.min, max: o.max, step: o.step });
-      input.addEventListener("input", () => setValue(o.key, Number(input.value)));
-    } else if (o.type === "choice") {
-      input = document.createElement("select");
-      for (const c of o.choices) input.append(new Option(c.name, String(c.value)));
-      input.addEventListener("change", () => setValue(o.key, Number(input.value)));
-    } else {
+    let value = null;
+    if (o.type === "bool") {
       const label = document.createElement("label");
-      input = Object.assign(document.createElement("input"), { type: "checkbox" });
+      input = Object.assign(document.createElement("input"), { type: "checkbox", id });
       input.addEventListener("change", () => setValue(o.key, input.checked));
       label.append(input, document.createTextNode(o.name));
-      control.append(label);
+      card.append(label);
+    } else {
+      const head = Object.assign(document.createElement("div"), { className: "head" });
+      const name = Object.assign(document.createElement("label"), { htmlFor: id, textContent: o.name });
+      value = Object.assign(document.createElement("span"), { className: "value" });
+      head.append(name, value);
+      if (o.type === "range") {
+        input = Object.assign(document.createElement("input"), { type: "range", min: o.min, max: o.max, step: o.step });
+        input.addEventListener("input", () => setValue(o.key, Number(input.value)));
+      } else {
+        input = document.createElement("select");
+        for (const c of o.choices) input.append(new Option(c.name, String(c.value)));
+        input.addEventListener("change", () => setValue(o.key, Number(input.value)));
+      }
+      input.id = id;
+      card.append(head, input);
     }
-    input.setAttribute("aria-label", o.name);
-    if (o.type !== "bool") control.append(input);
-
-    const about = document.createElement("p");
-    about.className = "about";
-    const picture = document.createElement("div");
-    card.append(head, control, about, picture);
-    list.append(card);
-    optionViews.set(o.key, { card, input, value, about, view: compare(picture) });
+    const about = Object.assign(document.createElement("p"), { className: "about" });
+    card.append(about);
+    $(o.advanced ? "options-more" : "options").append(card);
+    optionViews.set(o.key, { card, input, value, about });
   }
 }
 
@@ -149,11 +140,12 @@ function showValues() {
     const v = state.values[o.key];
     if (o.type === "bool") input.checked = v;
     else input.value = String(v);
-    value.textContent = o.type === "bool" ? "" : shown(o, v);
-    card.hidden = (o.when ? !o.when(state.values) : false) || (o.advanced && !state.advanced);
-    const engineHint = o.type === "choice" ? ` ${o.choices.find((c) => c.value === v)?.hint ?? ""}` : "";
-    about.textContent = o.hint + engineHint;
+    if (value) value.textContent = o.type === "choice" ? "" : shown(o, v);
+    card.hidden = o.when ? !o.when(state.values) : false;
+    const choiceHint = o.type === "choice" ? o.choices.find((c) => c.value === v)?.hint : "";
+    about.textContent = choiceHint || o.hint;
   }
+  $("more").open = state.more;
 }
 
 function setValue(key, v) {
@@ -169,84 +161,55 @@ function setValue(key, v) {
 const same = (a, b) => OPTIONS.every((o) => clean(a)[o.key] === clean(b)[o.key]);
 
 let changeTimer = 0;
-function settingsChanged() {
+function settingsChanged({ redraw = true } = {}) {
   clearTimeout(changeTimer);
   changeTimer = setTimeout(() => {
-    void call("storeSet", {
+    call("storeSet", {
       key: "current",
       value: {
         preset: state.preset,
         values: state.values,
         include: state.include,
         useGpu: state.useGpu,
-        advanced: state.advanced,
+        more: state.more,
       },
-    });
-    void drawOptionPictures();
-    void drawPreview();
-  }, 180);
+    }).catch(() => undefined); // not kept: the page starts from the defaults next time
+    if (redraw) upscalePreview();
+  }, 200);
 }
 
-/** One texture upscaled with `values` (the page's settings), on the GPU or the CPU. */
-function upscale(job, values, { urgent = false, transfer = [] } = {}) {
+/** One texture upscaled with `values`, on the GPU or the CPU. */
+async function upscale(job, values, { useGpu = state.useGpu, urgent = false, transfer = [] } = {}) {
   const failedBefore = state.upscaler.gpuFailed;
-  return state.upscaler
-    .run({ ...job, model: modelFile(values) }, { useGpu: state.useGpu, urgent, transfer })
-    .finally(() => {
-      if (state.upscaler.gpuFailed !== failedBefore) showDevice();
-    });
+  try {
+    return await state.upscaler.run({ ...job, model: modelFile(values) }, { useGpu, urgent, transfer });
+  } finally {
+    if (state.upscaler.gpuFailed !== failedBefore) {
+      showDevice();
+      if (!state.making) status(`The graphics card stopped (${state.upscaler.gpuFailed}): the processor took over.`);
+    }
+  }
 }
 
 function showDevice() {
-  const note = $("device-note");
   const gpu = state.upscaler?.gpu;
-  $("use-gpu").checked = state.useGpu;
-  $("use-gpu").disabled = !gpu;
-  $("advanced").checked = state.advanced;
-  if (!gpu) note.textContent = "No graphics card this page can use: the processor makes every texture (slower).";
-  else if (state.upscaler.gpuFailed)
-    note.textContent = `The graphics card stopped (${state.upscaler.gpuFailed}): the processor took over.`;
-  else if (state.useGpu)
-    note.textContent =
-      "The graphics card runs the model. Off: the processor, slower, with the same bytes on every device.";
-  else
-    note.textContent = "The processor runs the model: the same bytes on every device, slower than the graphics card.";
-}
-
-// Each option's picture: its sample with the option at its contrast, and at its value.
-let pictureRound = 0;
-async function drawOptionPictures() {
-  const round = ++pictureRound;
-  for (const o of OPTIONS) {
-    const { card, view } = optionViews.get(o.key);
-    if (card.hidden) continue;
-    const sample = SAMPLES[o.sample];
-    const now = { ...state.values };
-    const other = { ...now, [o.key]: o.contrast(now) };
-    const run = (v) =>
-      upscale(
-        {
-          kind: "rgba",
-          rgba: new Uint8Array(sample.rgba),
-          width: sample.width,
-          height: sample.height,
-          values: engineValues(v, sample.alpha, sample.edges),
-        },
-        v,
-        { urgent: true },
-      );
-    const [a, b] = await Promise.all([run(other), run(now)]);
-    if (round !== pictureRound) return;
-    if (a.rgba) paint(view.before, a, sample.alpha === 1);
-    if (b.rgba) paint(view.after, b, sample.alpha === 1);
-    view.labels(shown(o, other[o.key]), shown(o, now[o.key]));
-  }
+  const failed = state.upscaler?.gpuFailed;
+  $("use-gpu").checked = state.useGpu && !!gpu && !failed;
+  $("use-gpu").disabled = !gpu || !!failed;
+  $("device-note").textContent = !gpu
+    ? "This device has no graphics card the page can use: the processor makes the textures (slower)."
+    : failed
+      ? `The graphics card stopped (${failed}): the processor makes the textures (slower).`
+      : state.useGpu
+        ? "Fast. Off: the processor, slower, with the same bytes on every device."
+        : "Off: the processor makes the textures, slower, with the same bytes on every device.";
 }
 
 // ---------------------------------------------------------------------------------------------
 // Presets
 
 const allPresets = () => [...BUILT_IN, ...state.presets];
+const isBuiltIn = (name) => BUILT_IN.some((p) => p.name.toLowerCase() === name.toLowerCase());
 
 function showPresets() {
   const select = $("preset");
@@ -268,52 +231,49 @@ function choosePreset(name) {
   settingsChanged();
 }
 
+/** Keeps the player's presets; false (and says why) when the launcher could not. */
 async function savePresets() {
-  await call("storeSet", { key: "presets", value: state.presets });
+  try {
+    await call("storeSet", { key: "presets", value: state.presets });
+    return true;
+  } catch (e) {
+    status(`The presets could not be kept: ${message(e)}`, true);
+    return false;
+  }
 }
 
 function askName() {
-  const form = $("name-form");
-  form.hidden = false;
-  $("name-input").value = state.preset && !BUILT_IN.some((p) => p.name === state.preset) ? state.preset : "";
+  $("name-form").hidden = false;
+  $("name-input").value = state.preset && !isBuiltIn(state.preset) ? state.preset : "";
   $("name-input").focus();
 }
 
 async function savePresetAs(name) {
   name = name.trim().slice(0, 40);
   if (!name) return;
-  if (BUILT_IN.some((p) => p.name.toLowerCase() === name.toLowerCase())) {
-    status(`"${name}" is a preset of the mod's: pick another name.`, true);
+  if (isBuiltIn(name)) {
+    status(`"${name}" is one of the mod's presets: pick another name.`, true);
     return;
   }
-  state.presets = state.presets.filter((p) => p.name !== name);
-  state.presets.push({ name, values: { ...state.values } });
+  state.presets = [...state.presets.filter((p) => p.name !== name), { name, values: { ...state.values } }];
   state.preset = name;
-  await savePresets();
   showPresets();
-  settingsChanged();
-  status(`Saved the preset "${name}".`);
+  settingsChanged({ redraw: false });
+  if (await savePresets()) status(`Saved the preset "${name}".`);
 }
 
 async function deletePreset() {
   const name = state.preset;
   state.presets = state.presets.filter((p) => p.name !== name);
   state.preset = "";
-  await savePresets();
   showPresets();
-  settingsChanged();
-  status(`Deleted the preset "${name}".`);
+  settingsChanged({ redraw: false });
+  if (await savePresets()) status(`Deleted the preset "${name}".`);
 }
 
 async function exportPreset() {
   const name = state.preset || "Custom";
-  const preset = {
-    format: 1,
-    mod: "nanotech-upscaler",
-    version: state.info.mod.version,
-    name,
-    values: state.values,
-  };
+  const preset = { format: 1, mod: "nanotech-upscaler", version: state.info.mod.version, name, values: state.values };
   const bytes = new TextEncoder().encode(`${JSON.stringify(preset, null, 2)}\n`).buffer;
   const saved = await call("save", { name: `Nanotech preset ${name}`, extension: "json", bytes });
   if (saved) status(`Saved ${saved}.`);
@@ -334,27 +294,21 @@ async function importPreset() {
     return;
   }
   let name =
-    String(preset.name || "Imported")
+    String(preset.name ?? "")
       .trim()
       .slice(0, 40) || "Imported";
-  if (BUILT_IN.some((p) => p.name.toLowerCase() === name.toLowerCase())) name = `${name} (imported)`;
-  state.presets = state.presets.filter((p) => p.name !== name);
-  state.presets.push({ name, values: clean(preset.values) });
-  await savePresets();
+  if (isBuiltIn(name)) name = `${name.slice(0, 29)} (imported)`;
+  state.presets = [...state.presets.filter((p) => p.name !== name), { name, values: clean(preset.values) }];
   choosePreset(name);
-  status(`Imported the preset "${name}".`);
+  if (await savePresets()) status(`Imported the preset "${name}".`);
 }
 
 // ---------------------------------------------------------------------------------------------
-// The preview: one texture large, and a strip of others
+// The preview: one texture, before and after
 
-const preview = { view: null, round: 0 };
-// Ratchet: his model and view once loaded, his textures' originals, the frame loop.
-const ratchet = { file: null, view: null, originals: null, round: 0, frame: 0, failed: false };
+const preview = { view: null, round: 0, running: false, again: false };
 
-function currentList() {
-  return state.textures[state.group] ?? [];
-}
+const currentTexture = () => state.textures[state.group]?.[state.index] ?? null;
 
 function showPicker() {
   const select = $("group");
@@ -366,171 +320,92 @@ function showPicker() {
     select.append(o);
   }
   select.value = state.group;
-  const list = currentList();
-  $("which").textContent = list.length ? `${state.index + 1} of ${list.length}` : "none";
-  $("prev").disabled = $("next").disabled = list.length < 2;
-}
-
-function showMode() {
-  const onRatchet = state.mode === "ratchet";
-  $("preview").hidden = $("texture-bar").hidden = onRatchet;
-  $("ratchet").hidden = $("ratchet-bar").hidden = !onRatchet;
-  for (const b of $("strip").querySelectorAll("button")) {
-    const pressed = b.dataset.ratchet
-      ? onRatchet
-      : !onRatchet && b.dataset.group === state.group && Number(b.dataset.index) === state.index;
-    b.setAttribute("aria-pressed", String(pressed));
-  }
-  cancelAnimationFrame(ratchet.frame);
-  if (onRatchet && ratchet.view) loop();
-}
-
-function loop() {
-  ratchet.view.draw();
-  ratchet.frame = requestAnimationFrame(loop);
-}
-
-function pickRatchet() {
-  state.mode = "ratchet";
-  showMode();
-  void drawPreview();
+  const n = state.textures[state.group].length;
+  $("which").textContent = n ? `${state.index + 1} / ${n}` : "none";
+  $("group").disabled = !n;
+  $("prev").disabled = $("next").disabled = n < 2;
 }
 
 function pick(group, index) {
   const list = state.textures[group];
   if (!list?.length) return;
-  state.mode = "texture";
   state.group = group;
   state.index = ((index % list.length) + list.length) % list.length;
   showPicker();
-  showMode();
-  void drawPreview();
+  void showOriginal();
+  upscalePreview();
 }
 
-async function drawRatchet() {
-  const round = ++ratchet.round;
-  $("ratchet-busy").hidden = false;
+// The original at once; the upscaled one after it, when it is made.
+async function showOriginal() {
+  const texture = currentTexture();
+  const { before, after, left, right } = preview.view;
+  const round = ++preview.round;
+  after.hidden = true;
+  right.textContent = "";
+  if (!texture) return;
   try {
-    if (!ratchet.view) {
-      const bytes = await call("read", { root: "levels", path: ratchet.file.path });
-      const model = loadModel(bytes, ratchet.file.path);
-      ratchet.view = new RatchetView($("ratchet-canvas"), model);
-      ratchet.originals = new Map();
-      for (const path of new Set(model.parts.map((p) => p.texture).filter(Boolean))) {
-        const png = await call("read", { root: "levels", path });
-        ratchet.originals.set(path, { png, shown: await decodeForShow(png.slice(0)) });
-      }
-      ratchet.view.textures(
-        0,
-        [...ratchet.originals].map(([path, t]) => [path, t.shown]),
-      );
-      if (state.mode === "ratchet") showMode();
-    }
-    const upscaled = [];
-    for (const [path, t] of ratchet.originals) {
-      const out = await upscale(
-        { kind: "png", png: t.png.slice(0), values: engineValues(state.values, 0, 1), asPng: false, keepRgba: true },
-        state.values,
-        { urgent: true },
-      );
-      if (round !== ratchet.round) return;
-      if (out.rgba) upscaled.push([path, out]);
-    }
-    ratchet.view.textures(1, upscaled);
+    const shown = await decode(await call("read", { root: texture.root, path: texture.path }));
+    if (round !== preview.round) return;
+    paint(before, shown, texture.alpha === 1);
+    $("preview").style.setProperty("--ratio", String(shown.width / shown.height));
+    left.textContent = `Original ${shown.width}×${shown.height}`;
   } catch (e) {
-    ratchet.failed = true;
-    status(`Ratchet could not be shown: ${e.message}`, true);
-  } finally {
-    if (round === ratchet.round) $("ratchet-busy").hidden = true;
+    if (round === preview.round) left.textContent = `Cannot be read (${message(e)})`;
   }
 }
 
-async function drawPreview() {
-  if (state.mode === "ratchet") return drawRatchet();
-  const texture = currentList()[state.index];
+// One upscale at a time: a change while one runs makes the latest again once it ends, so moving a
+// slider quickly does not queue a texture for every step.
+function upscalePreview() {
+  if (preview.running) {
+    preview.again = true;
+    return;
+  }
+  preview.running = true;
+  void (async () => {
+    try {
+      do {
+        preview.again = false;
+        await upscaleOnce();
+      } while (preview.again);
+    } finally {
+      preview.running = false;
+    }
+  })();
+}
+
+async function upscaleOnce() {
+  const texture = currentTexture();
   if (!texture) return;
-  const round = ++preview.round;
-  const view = preview.view;
-  view.busy(true);
+  const round = preview.round;
+  const values = { ...state.values };
+  const { after, right } = preview.view;
+  right.textContent = "Upscaling…";
   try {
     const bytes = await call("read", { root: texture.root, path: texture.path });
-    const shown = await decodeForShow(bytes.slice(0));
-    if (round !== preview.round) return;
-    const gs = texture.alpha === 1;
-    paint(view.before, shown, gs);
-    view.aspect(shown.width, shown.height);
     const out = await upscale(
       {
         kind: "png",
         png: bytes,
-        values: engineValues(state.values, texture.alpha, texture.edges),
+        values: engineValues(values, texture.alpha, texture.edges),
         asPng: false,
         keepRgba: true,
       },
-      state.values,
+      values,
       { urgent: true, transfer: [bytes] },
     );
-    if (round !== preview.round) return;
+    if (round !== preview.round || preview.again) return;
     if (out.error) {
-      view.labels("Original", out.error === "too-large" ? "Too large at this scale" : "Cannot be read");
+      right.textContent = out.error === "too-large" ? "Too large at this scale" : "Cannot be upscaled";
       return;
     }
-    paint(view.after, out, gs);
-    view.labels(`Original ${shown.width}×${shown.height}`, `${state.values.scale}× ${out.width}×${out.height}`);
+    paint(after, out, texture.alpha === 1);
+    after.hidden = false;
+    right.textContent = `${values.scale}× ${out.width}×${out.height}`;
   } catch (e) {
-    if (round === preview.round) status(`The preview failed: ${e.message}`, true);
-  } finally {
-    if (round === preview.round) view.busy(false);
-  }
-}
-
-/** A few textures of every group, spread through each. */
-async function buildStrip() {
-  const strip = $("strip");
-  strip.innerHTML = "";
-  const groups = GROUPS.filter((g) => state.textures[g.key].length);
-  const each = Math.max(1, Math.floor(STRIP_SIZE / Math.max(1, groups.length)));
-  const items = [];
-  if (ratchet.file) {
-    const li = document.createElement("li");
-    const button = Object.assign(document.createElement("button"), {
-      className: "ratchet-pick",
-      textContent: "Ratchet",
-    });
-    button.dataset.ratchet = "1";
-    button.setAttribute("aria-label", "Ratchet, with his textures");
-    button.addEventListener("click", pickRatchet);
-    li.append(button);
-    strip.append(li);
-  }
-  for (const g of groups) {
-    const list = state.textures[g.key];
-    const n = Math.min(each, list.length);
-    for (let i = 0; i < n; i++) items.push({ group: g.key, index: Math.floor((i * list.length) / n) });
-  }
-  for (const item of items) {
-    const li = document.createElement("li");
-    const button = document.createElement("button");
-    button.dataset.group = item.group;
-    button.dataset.index = String(item.index);
-    button.setAttribute("aria-label", `${GROUPS.find((g) => g.key === item.group).name}, texture ${item.index + 1}`);
-    button.addEventListener("click", () => pick(item.group, item.index));
-    const canvas = document.createElement("canvas");
-    button.append(canvas);
-    li.append(button);
-    strip.append(li);
-  }
-  showMode();
-  // Their pictures, one after another, after the page is up.
-  for (const item of items) {
-    const texture = state.textures[item.group][item.index];
-    try {
-      const shown = await decodeForShow(await call("read", { root: texture.root, path: texture.path }));
-      const canvas = strip.querySelector(`button[data-group="${item.group}"][data-index="${item.index}"] canvas`);
-      if (canvas) paint(canvas, shown, texture.alpha === 1);
-    } catch {
-      // A picture that cannot be shown leaves its square empty.
-    }
+    if (round === preview.round) right.textContent = "Failed";
+    if (!state.making) status(`The preview failed: ${message(e)}`, true);
   }
 }
 
@@ -546,108 +421,140 @@ function showGroups() {
     const input = Object.assign(document.createElement("input"), {
       type: "checkbox",
       checked: state.include[g.key] && n > 0,
-      disabled: n === 0,
+      disabled: n === 0 || !!state.making,
     });
+    input.dataset.count = String(n);
     input.addEventListener("change", () => {
       state.include[g.key] = input.checked;
-      settingsChanged();
+      settingsChanged({ redraw: false });
+      showButtons();
     });
-    const count = Object.assign(document.createElement("span"), { className: "count", textContent: `${n} textures` });
+    const count = Object.assign(document.createElement("span"), { className: "count", textContent: String(n) });
     label.append(input, document.createTextNode(g.name), count);
     box.append(label);
   }
 }
 
-function status(text, error = false) {
-  const p = $("status");
-  p.textContent = text;
-  p.classList.toggle("error", error);
+const chosenTextures = () => GROUPS.filter((g) => state.include[g.key]).flatMap((g) => state.textures[g.key]);
+
+function showButtons() {
+  const making = !!state.making;
+  const can = state.ready && !making && chosenTextures().length > 0;
+  $("make").disabled = $("make-new").disabled = !can;
+  $("make").hidden = $("make-new").hidden = making;
+  $("cancel").hidden = !making;
+  for (const input of $("groups").querySelectorAll("input")) input.disabled = making || input.dataset.count === "0";
 }
 
-const settingsKey = () => JSON.stringify([modelFile(state.values), ...engineValues(state.values, 0, 0)]);
-const presetLabel = () => state.preset || "Custom";
-
-function minutes(ms) {
-  const s = Math.round(ms / 1000);
-  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${s % 60} s`;
-}
+const settingsKey = (values) => JSON.stringify([modelFile(values), ...engineValues(values, 0, 0)]);
 
 async function makePack(onlyNew) {
-  if (state.making) return;
-  const packId = state.info.packId;
-  const chosen = GROUPS.filter((g) => state.include[g.key]).flatMap((g) => state.textures[g.key]);
+  if (state.making || !state.ready) return;
+  const chosen = chosenTextures();
   if (!chosen.length) {
-    status("Choose what to put in the pack.", true);
+    status("Choose what goes in the pack.", true);
     return;
   }
-  const madeKey = `made-${packId}`;
-  const before = onlyNew ? await call("storeGet", { key: madeKey }) : null;
-  const known = new Set(before?.settings === settingsKey() ? before.names : []);
-  if (onlyNew && !known.size) {
-    status("No pack was made with these settings yet: making the whole pack.");
-  }
-  const name = `Nanotech ${presetLabel()} ${packId}${known.size ? " (new)" : ""}`;
-  const token = await call("saveStart", { name, extension: "zip" });
-  if (!token) return;
-
-  const job = { cancelled: false, token };
+  // The settings as they are now: changing them while the pack is made changes only the preview.
+  const values = { ...state.values };
+  const useGpu = state.useGpu;
+  const presetName = state.preset || "Custom";
+  const packId = state.info.packId;
+  const job = { cancelled: false, token: null };
   state.making = job;
-  $("make").disabled = $("make-new").disabled = true;
-  $("cancel").hidden = false;
+  showButtons();
   const progress = $("progress");
-  progress.hidden = false;
   progress.value = 0;
+  progress.hidden = false;
 
-  const zip = new ZipWriter((bytes) => call("saveWrite", { token, bytes: bytes.buffer }));
-  let writing = Promise.resolve();
-  const names = new Set(known);
-  const added = [];
+  const total = chosen.length;
+  const started = performance.now();
+  let phase = "Starting…";
   let done = 0;
   let failed = 0;
-  const started = performance.now();
-  const total = chosen.length;
+  let firstError = "";
+  const added = [];
+  // Every second too, so a slow first texture still shows the page is working.
+  const report = () => {
+    if (job.cancelled) return;
+    const took = performance.now() - started;
+    if (!done) {
+      status(`${phase} ${minutes(took)}`);
+      return;
+    }
+    const left = (took / done) * (total - done);
+    const cpu = useGpu && state.upscaler.gpuFailed ? " (on the processor: the graphics card stopped)" : "";
+    status(
+      `${done} of ${total} textures, ${added.length} in the pack${done >= 8 ? `, about ${minutes(left)} left` : ""}${cpu}`,
+    );
+  };
+  const timer = setInterval(report, 1000);
+  report();
   const tick = () => {
     done++;
     progress.value = done / total;
-    const left = ((performance.now() - started) / done) * (total - done);
-    status(
-      `${done} of ${total} textures, ${added.length} in the pack${done > 8 ? `, about ${minutes(left)} left` : ""}…`,
-    );
+    report();
   };
 
+  const madeKey = `made-${packId}`;
   try {
+    const before = onlyNew ? await call("storeGet", { key: madeKey }).catch(() => null) : null;
+    const known = new Set(before?.settings === settingsKey(values) && Array.isArray(before.names) ? before.names : []);
+    const name = `Nanotech ${presetName} ${packId}${known.size ? " (new)" : ""}`;
+    job.token = await call("saveStart", { name, extension: "zip" });
+    if (!job.token || job.cancelled) throw new Error("cancelled");
+    const token = job.token;
+    const zip = new ZipWriter((bytes) => call("saveWrite", { token, bytes: bytes.buffer }));
+    let writing = Promise.resolve();
+    const names = new Set(known);
+
     await state.pool.everywhere({ kind: "skip", names: [...known] });
     // Effects in the dump that are a level's textures are scaled as the level's: their names first.
     const worldNames = new Set();
     if (state.include.effects && !state.include.world && state.textures.world.some((t) => t.root === "levels")) {
+      let n = 0;
       for (const t of state.textures.world) {
-        const bytes = await call("read", { root: t.root, path: t.path });
-        const out = await state.pool.run({ kind: "name", png: bytes }, [bytes]);
-        if (out.name) worldNames.add(out.name);
+        if (job.cancelled) throw new Error("cancelled");
+        phase = `Checking the planets' textures (${++n} of ${state.textures.world.length})…`;
+        try {
+          const bytes = await call("read", { root: t.root, path: t.path });
+          const out = await state.pool.run({ kind: "name", png: bytes }, [bytes]);
+          if (out.name) worldNames.add(out.name);
+        } catch {
+          // Not readable: an effect with its name is then scaled as an effect.
+        }
       }
     }
-    const values = (t) => engineValues(state.values, t.alpha, t.edges);
+    phase =
+      onlyNew && !known.size
+        ? "No pack was made with these settings yet: making it whole…"
+        : "Making the first texture…";
+
     const one = async (t) => {
-      if (job.cancelled) return;
       if (t.name && (names.has(t.name) || worldNames.has(t.name))) return tick();
-      let bytes;
+      let out;
       try {
-        bytes = await call("read", { root: t.root, path: t.path });
-      } catch {
-        // Gone since the list was made (the game dumped over it): the rest of the pack goes on.
+        const bytes = await call("read", { root: t.root, path: t.path });
+        out = await upscale(
+          { kind: "png", png: bytes, values: engineValues(values, t.alpha, t.edges), asPng: true, skipKnown: !t.name },
+          values,
+          { useGpu, transfer: [bytes] },
+        );
+      } catch (e) {
+        if (job.cancelled) return;
+        // Gone since the list was made (the game dumped over it), or the engine failed on it: the
+        // rest of the pack goes on.
         failed++;
+        firstError ||= message(e);
         return tick();
       }
-      const out = await upscale(
-        { kind: "png", png: bytes, values: values(t), asPng: true, skipKnown: !t.name },
-        state.values,
-        { transfer: [bytes] },
-      );
       if (job.cancelled) return;
       // A dumped texture is named by its file; a level's by the engine, as the port names it.
       const named = t.name ?? out.name;
-      if (out.error) failed++;
-      else if (!out.skipped && !names.has(named) && !worldNames.has(named)) {
+      if (out.error) {
+        failed++;
+        firstError ||= out.error;
+      } else if (!out.skipped && !names.has(named) && !worldNames.has(named)) {
         names.add(named);
         added.push(named);
         writing = writing.then(() => zip.add(`${t.folder}/${named}.png`, out.png));
@@ -662,45 +569,47 @@ async function makePack(onlyNew) {
     });
     await Promise.all(lanes);
     if (job.cancelled) throw new Error("cancelled");
+    await writing;
     if (!added.length) {
       await call("saveEnd", { token, keep: false });
-      status(
-        known.size ? "Nothing new: every texture is in your last pack already." : "No texture could be made.",
-        !known.size,
-      );
+      if (known.size && !failed) status("Nothing new: every texture is in your last pack already.");
+      else status(`No texture could be made${firstError ? ` (${firstError})` : ""}.`, true);
       return;
     }
     const manifest = {
       format: 1,
       game: packId,
-      name: `Nanotech Upscaler ${presetLabel()}`,
+      name: `Nanotech Upscaler ${presetName}`,
       textures: added.length,
       madeWith: `Nanotech Upscaler ${state.info.mod.version}`,
     };
-    await writing;
     await zip.add("openrac-texture-pack.json", new TextEncoder().encode(`${JSON.stringify(manifest, null, 2)}\n`));
     await zip.finish();
     const saved = await call("saveEnd", { token, keep: true });
     if (!saved) {
-      status("Not saved.");
+      status("The pack was not saved.", true);
       return;
     }
-    // Only for "only new textures" next time: the pack is saved even if this cannot be kept.
-    await call("storeSet", { key: madeKey, value: { settings: settingsKey(), names: [...names] } }).catch(
+    // Only for "Only new" next time: the pack is saved even if this cannot be kept.
+    await call("storeSet", { key: madeKey, value: { settings: settingsKey(values), names: [...names] } }).catch(
       () => undefined,
     );
+    const skipped = failed ? `; ${failed} could not be made (${firstError})` : "";
     status(
-      `Saved ${saved}: ${added.length} textures in ${minutes(performance.now() - started)}${failed ? `, ${failed} could not be read` : ""}. Add it in Texture packs.`,
+      `Saved ${saved}: ${added.length} textures in ${minutes(performance.now() - started)}${skipped}. Add it in Texture packs.`,
+      failed > 0,
     );
   } catch (e) {
+    const stopped = job.cancelled || message(e) === "cancelled";
+    job.cancelled = true; // the other lanes stop too
     state.pool.clear();
-    await call("saveEnd", { token, keep: false }).catch(() => undefined);
-    status(job.cancelled ? "Stopped: nothing was saved." : `The pack failed: ${e.message}`, !job.cancelled);
+    if (job.token) await call("saveEnd", { token: job.token, keep: false }).catch(() => undefined);
+    status(stopped ? "Stopped: nothing was saved." : `The pack failed: ${message(e)}`, !stopped);
   } finally {
+    clearInterval(timer);
     state.making = null;
-    $("make").disabled = $("make-new").disabled = false;
-    $("cancel").hidden = true;
     progress.hidden = true;
+    showButtons();
   }
 }
 
@@ -708,14 +617,17 @@ function stopMaking() {
   if (!state.making) return;
   state.making.cancelled = true;
   state.pool.clear();
+  status("Stopping…");
 }
 
 // ---------------------------------------------------------------------------------------------
 
 async function start() {
+  status("Starting…");
   buildOptions();
   preview.view = compare($("preview"));
   state.info = await call("info");
+  applyTheme(state.info.theme);
   state.pool = new Pool(workerCount(state.info.system));
   state.upscaler = new Upscaler(state.pool);
 
@@ -724,46 +636,47 @@ async function start() {
     call("storeGet", { key: "presets" }).catch(() => null),
   ]);
   if (Array.isArray(presets)) {
-    state.presets = presets
-      .filter((p) => typeof p?.name === "string" && p.name.trim())
-      .map((p) => ({ name: p.name.trim().slice(0, 40), values: clean(p.values) }));
+    const seen = new Set();
+    for (const p of presets) {
+      const name = typeof p?.name === "string" ? p.name.trim().slice(0, 40) : "";
+      if (!name || isBuiltIn(name) || seen.has(name)) continue;
+      seen.add(name);
+      state.presets.push({ name, values: clean(p.values) });
+    }
   }
-  if (current?.values) {
-    state.values = clean(current.values);
-    state.preset = allPresets().some((p) => p.name === current.preset && same(p.values, state.values))
-      ? current.preset
-      : "";
+  if (current && typeof current === "object") {
+    if (current.values) state.values = clean(current.values);
+    const preset = allPresets().find((p) => p.name === current.preset);
+    state.preset = preset && same(preset.values, state.values) ? preset.name : current.values ? "" : "Clean";
     for (const g of GROUPS)
       if (typeof current.include?.[g.key] === "boolean") state.include[g.key] = current.include[g.key];
     if (typeof current.useGpu === "boolean") state.useGpu = current.useGpu;
-    if (typeof current.advanced === "boolean") state.advanced = current.advanced;
+    if (typeof current.more === "boolean") state.more = current.more;
   }
-  await state.upscaler.ready;
-  showDevice();
   showValues();
   showPresets();
-  void drawOptionPictures();
 
   const game = { rac1: "Ratchet & Clank", rac2: "Going Commando" }[state.info.game] ?? state.info.game;
   $("game").textContent =
-    `${game} (${state.info.version.toUpperCase()})${inLauncher ? "" : " · the page on its own, with sample textures"}`;
+    `${game} (${String(state.info.version).toUpperCase()})${inLauncher ? "" : ", the page on its own with sample textures"}`;
   status("Reading the game's textures…");
-  state.textures = await collect((done, total) => status(`Reading the levels' models: ${done} of ${total}…`));
-  const total = GROUPS.reduce((n, g) => n + state.textures[g.key].length, 0);
-  status(
-    total ? `${total} textures found.` : "No textures found: play the game once so the launcher reads its levels.",
-    !total,
-  );
-  if (!state.textures.levelsFound && !state.textures.world.length)
-    status("The levels were not found: play the game once so the launcher reads them.", true);
-  $("dump-hint").hidden = state.textures.interface.length > 0;
+  const [textures] = await Promise.all([
+    collect((done, total) => status(`Reading the levels: ${done} of ${total}…`)),
+    state.upscaler.ready,
+  ]);
+  state.textures = textures;
+  showDevice();
   showGroups();
-  state.group = GROUPS.find((g) => state.textures[g.key].length)?.key ?? "world";
-  ratchet.file = state.textures.ratchet;
+  $("dump-hint").hidden = textures.interface.length > 0;
+  const total = GROUPS.reduce((n, g) => n + textures[g.key].length, 0);
+  if (!textures.levelsFound && !textures.world.length)
+    status("The levels were not found: play the game once so the launcher reads them.", true);
+  else status(`${total} textures found. Pick the settings, then make the pack.`);
+  state.ready = total > 0;
+  showButtons();
+  state.group = GROUPS.find((g) => textures[g.key].length)?.key ?? "world";
   showPicker();
-  if (ratchet.file) pickRatchet();
-  else pick(state.group, 0);
-  void buildStrip();
+  pick(state.group, 0);
 }
 
 $("preset").addEventListener("change", () => choosePreset($("preset").value));
@@ -775,38 +688,25 @@ $("name-form").addEventListener("submit", (e) => {
 });
 $("name-cancel").addEventListener("click", () => ($("name-form").hidden = true));
 $("delete-preset").addEventListener("click", () => void deletePreset());
-$("export-preset").addEventListener("click", () => void exportPreset());
-$("import-preset").addEventListener("click", () => void importPreset().catch((e) => status(e.message, true)));
+$("export-preset").addEventListener("click", () => exportPreset().catch((e) => status(message(e), true)));
+$("import-preset").addEventListener("click", () => importPreset().catch((e) => status(message(e), true)));
 $("group").addEventListener("change", () => pick($("group").value, 0));
 $("prev").addEventListener("click", () => pick(state.group, state.index - 1));
 $("next").addEventListener("click", () => pick(state.group, state.index + 1));
-$("ratchet-split").addEventListener("input", () => {
-  const v = Number($("ratchet-split").value);
-  $("ratchet").style.setProperty("--split", `${v}%`);
-  if (ratchet.view) ratchet.view.split = v / 100;
-});
-$("turn-left").addEventListener("click", () => ratchet.view && (ratchet.view.angle -= 0.5));
-$("turn-right").addEventListener("click", () => ratchet.view && (ratchet.view.angle += 0.5));
-$("close-up").addEventListener("click", () => {
-  if (!ratchet.view) return;
-  ratchet.view.close = !ratchet.view.close;
-  $("close-up").setAttribute("aria-pressed", String(ratchet.view.close));
+$("more").addEventListener("toggle", () => {
+  if (state.more === $("more").open) return;
+  state.more = $("more").open;
+  settingsChanged({ redraw: false });
 });
 $("use-gpu").addEventListener("change", () => {
   state.useGpu = $("use-gpu").checked;
   showDevice();
   settingsChanged();
 });
-$("advanced").addEventListener("change", () => {
-  state.advanced = $("advanced").checked;
-  showValues();
-  showDevice();
-  settingsChanged();
-  void drawOptionPictures();
-});
 $("make").addEventListener("click", () => void makePack(false));
 $("make-new").addEventListener("click", () => void makePack(true));
 $("cancel").addEventListener("click", stopMaking);
+onTheme(applyTheme);
 setupPad(() => (state.making ? stopMaking() : void call("close")));
 
-start().catch((e) => status(`The page did not start: ${e.message}`, true));
+start().catch((e) => status(`The page did not start: ${message(e)}`, true));

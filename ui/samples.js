@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (c) 2026 Mateusz Kłysz
-// Small textures in the PS2 games' style, drawn here (never taken from a disc), for the pictures
-// that explain the options and for the page outside the launcher. tests/samples.hpp draws most of
-// them for the engine's tests.
+// Small textures in the PS2 games' style, drawn here (never taken from a disc), for the page opened
+// on its own, outside the launcher. tests/samples.hpp draws most of them for the engine's tests.
 
 function image(width, height, texel) {
   const rgba = new Uint8ClampedArray(width * height * 4);

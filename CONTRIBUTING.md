@@ -31,9 +31,9 @@ rules forbid (a test of the rules) carries `ai-rules: allow`.
 ## Game data
 
 Never commit anything from Ratchet & Clank's discs (textures, models, sounds, text,
-executables), and no texture upscaled from one. The tests and the pictures that explain the
-options use textures drawn by the code (`tests/samples.hpp`); the mod reads the game's textures
-only on the player's own device.
+executables), and no texture upscaled from one. The tests and the page opened on its own use
+textures drawn by the code (`tests/samples.hpp`, `ui/samples.js`); the mod reads the game's
+textures only on the player's own device.
 
 ## The same bytes everywhere
 

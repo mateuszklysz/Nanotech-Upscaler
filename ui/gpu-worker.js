@@ -22,6 +22,9 @@ self.onmessage = ({ data }) => {
 };
 
 async function work({ id, job }) {
+  // The page's watchdog (upscaler.js) hears from each job as it starts and after every tile.
+  const alive = () => self.postMessage({ id, alive: true });
+  alive();
   try {
     if (!networks.has(job.model)) {
       const response = await fetch(new URL(`models/${job.model}.bin`, import.meta.url));
@@ -32,7 +35,7 @@ async function work({ id, job }) {
       gpu.load(networks.get(job.model));
       loaded = job.model;
     }
-    const rgba = await gpu.run(new Uint8Array(job.rgba), job.width, job.height, job);
+    const rgba = await gpu.run(new Uint8Array(job.rgba), job.width, job.height, { ...job, onTile: alive });
     self.postMessage({ id, value: rgba }, [rgba.buffer]);
   } catch (e) {
     self.postMessage({ id, error: String(e?.message ?? e) });

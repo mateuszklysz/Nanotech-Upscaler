@@ -5,40 +5,63 @@
 // options after the network, the PNG); on the CPU the engines do everything, with the same bytes on
 // every system.
 
+// A GPU job that has not moved for this long is taken as stuck (a driver that never finishes a
+// draw): the GPU is dropped and the processor makes that texture and the rest.
+const STALL_MS = 30_000;
+
 /** The GPU's network in a worker of its own (an OffscreenCanvas); null when the browser has none. */
 async function startGpu() {
+  let worker;
   try {
-    const worker = new Worker(new URL("gpu-worker.js", import.meta.url), { type: "module" });
-    const ready = await new Promise((resolve) => {
-      worker.onmessage = ({ data }) => resolve(data.ready === true);
-      worker.onerror = () => resolve(false);
-      setTimeout(() => resolve(false), 10000);
-    });
-    if (ready) {
-      const pending = new Map();
-      let next = 1;
-      worker.onmessage = ({ data }) => {
-        const item = pending.get(data.id);
-        pending.delete(data.id);
-        if (data.error) item?.reject(new Error(data.error));
-        else item?.resolve(data.value);
-      };
-      return {
-        where: "worker",
-        run: (job) =>
-          new Promise((resolve, reject) => {
-            const id = next++;
-            pending.set(id, { resolve, reject });
-            worker.postMessage({ id, job }, [job.rgba.buffer]);
-          }),
-      };
-    }
-    worker.terminate();
+    worker = new Worker(new URL("gpu-worker.js", import.meta.url), { type: "module" });
   } catch {
-    // No module workers.
+    return null; // no module workers
   }
-  // A GPU on the page itself would stop it while it draws (seconds on a phone): the CPU instead.
-  return null;
+  const ready = await new Promise((resolve) => {
+    worker.onmessage = ({ data }) => resolve(data?.ready === true);
+    worker.onerror = () => resolve(false);
+    setTimeout(() => resolve(false), 10_000);
+  });
+  if (!ready) {
+    // A GPU on the page itself would stop it while it draws (seconds on a phone): the CPU instead.
+    worker.terminate();
+    return null;
+  }
+
+  const pending = new Map();
+  let next = 1;
+  let broken = null;
+  let timer = 0;
+  const stop = (why) => {
+    broken = why;
+    clearTimeout(timer);
+    worker.terminate();
+    for (const item of pending.values()) item.reject(new Error(why));
+    pending.clear();
+  };
+  // Only the job the worker is on is timed: the others wait their turn behind it.
+  const watch = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => stop(`no answer for ${STALL_MS / 1000} s`), STALL_MS);
+  };
+  worker.onmessage = ({ data }) => {
+    if (data.alive) return watch();
+    clearTimeout(timer);
+    const item = pending.get(data.id);
+    pending.delete(data.id);
+    if (data.error) item?.reject(new Error(data.error));
+    else item?.resolve(data.value);
+  };
+  worker.onerror = (e) => stop(e.message || "it stopped");
+  return {
+    run: (job) =>
+      new Promise((resolve, reject) => {
+        if (broken) return reject(new Error(broken));
+        const id = next++;
+        pending.set(id, { resolve, reject });
+        worker.postMessage({ id, job }, [job.rgba.buffer]);
+      }),
+  };
 }
 
 const NEURAL = 4;

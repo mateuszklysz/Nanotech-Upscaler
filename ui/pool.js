@@ -86,13 +86,23 @@ export class Pool {
     this.#pump();
   }
 
+  // A worker that stops (its engine did not load, or it ran out of memory) is not given work
+  // again; with none left, the page's own engine takes over what is waiting.
   #failed(worker, message) {
+    worker.terminate();
+    this.workers = this.workers.filter((w) => w !== worker);
+    this.idle = this.idle.filter((w) => w !== worker);
     for (const [id, item] of this.pending) {
       if (item.worker === worker) {
         this.pending.delete(id);
         item.reject(new Error(message));
       }
     }
+    if (this.workers.length) return this.#pump();
+    this.local = loadEngine(new URL("nanotech.wasm", import.meta.url));
+    const waiting = this.queue;
+    this.queue = [];
+    for (const item of waiting) this.#runLocal(item.job).then(item.resolve, item.reject);
   }
 
   async #runLocal(job) {

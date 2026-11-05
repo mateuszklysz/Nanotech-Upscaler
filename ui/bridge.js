@@ -11,6 +11,7 @@ export const inLauncher = window.parent !== window;
 let next = 1;
 const waiting = new Map();
 const padListeners = [];
+const themeListeners = [];
 
 window.addEventListener("message", (e) => {
   if (e.source !== window.parent) return;
@@ -18,6 +19,10 @@ window.addEventListener("message", (e) => {
   if (!d || d.openrac !== PROTOCOL) return;
   if (d.event === "pad") {
     for (const listen of padListeners) listen(d.button, d.down);
+    return;
+  }
+  if (d.event === "theme") {
+    for (const listen of themeListeners) listen(d.theme);
     return;
   }
   const w = waiting.get(d.id);
@@ -30,6 +35,11 @@ window.addEventListener("message", (e) => {
 /** The launcher's pad buttons (up, down, left, right, accept, back, prev, next, more). */
 export function onPad(listen) {
   padListeners.push(listen);
+}
+
+/** The launcher's colours, when they change (theme.js). */
+export function onTheme(listen) {
+  themeListeners.push(listen);
 }
 
 /** One call: its answer. ArrayBuffers in `args` are handed over, not copied. */

@@ -9,88 +9,76 @@
   </head>
   <body>
     <header class="top">
-      <div>
-        <h1>Nanotech Upscaler</h1>
-        <p id="game" class="dim">Reading the game's textures…</p>
-      </div>
+      <h1>Nanotech Upscaler</h1>
+      <p id="game" class="dim"></p>
     </header>
 
     <main class="layout">
+      <section class="preview panel" aria-label="Preview" data-section>
+        <div class="stage"><div id="preview" class="compare"></div></div>
+        <p class="caption"><span id="before-label">Original</span><span id="after-label"></span></p>
+        <div class="picker">
+          <select id="group" aria-label="Which textures"></select>
+          <button id="prev" aria-label="Previous texture">‹</button>
+          <span id="which" class="dim"></span>
+          <button id="next" aria-label="Next texture">›</button>
+        </div>
+      </section>
+
       <div class="side">
-        <section class="preview panel" aria-label="Preview" data-section>
-          <div class="preview-main">
-            <div id="preview" class="compare big"></div>
-            <div id="ratchet" class="compare big ratchet" hidden>
-              <canvas id="ratchet-canvas"></canvas>
-              <div class="line"></div>
-              <input id="ratchet-split" type="range" min="0" max="100" value="50" aria-label="Before and after" />
-              <span class="label left">Original</span>
-              <span class="label right">Upscaled</span>
-              <span id="ratchet-busy" class="busy" hidden>…</span>
-            </div>
-            <div id="ratchet-bar" class="picker" hidden>
-              <button id="turn-left" aria-label="Turn him left">⟲</button>
-              <button id="turn-right" aria-label="Turn him right">⟳</button>
-              <button id="close-up" aria-pressed="false">Close up</button>
-              <span class="dim small">Ratchet with his own textures, posed by his idle.</span>
-            </div>
-            <div id="texture-bar" class="picker">
-              <select id="group" aria-label="Which textures"></select>
-              <button id="prev" aria-label="Previous texture">‹</button>
-              <span id="which" class="dim"></span>
-              <button id="next" aria-label="Next texture">›</button>
-            </div>
-            <p class="dim small">
-              Drag the line, or move it with left and right: original on the left, upscaled on the right.
-            </p>
+        <section class="settings panel" aria-label="Settings" data-section>
+          <div class="row">
+            <label for="preset">Preset</label>
+            <select id="preset"></select>
+            <button id="save-preset">Save as…</button>
+            <button id="delete-preset">Delete</button>
           </div>
-          <ul id="strip" class="strip" aria-label="More textures"></ul>
+          <form id="name-form" class="row" hidden>
+            <input id="name-input" maxlength="40" placeholder="Preset name" aria-label="Preset name" />
+            <button type="submit" class="primary">Save</button>
+            <button type="button" id="name-cancel">Cancel</button>
+          </form>
+          <div id="options" class="options"></div>
+          <details id="more">
+            <summary>More options</summary>
+            <div id="options-more" class="options"></div>
+            <div class="option">
+              <label><input type="checkbox" id="use-gpu" checked /> Use the graphics card</label>
+              <p id="device-note" class="about"></p>
+            </div>
+            <div class="row">
+              <button id="export-preset">Export preset</button>
+              <button id="import-preset">Import preset</button>
+            </div>
+          </details>
         </section>
-        <section class="make panel" aria-label="Make the pack" data-section>
-          <h2>Make the pack</h2>
+
+        <section class="pack panel" aria-label="What goes in the pack" data-section>
+          <h2>In the pack</h2>
           <div id="groups" class="groups"></div>
           <p id="dump-hint" class="hint" hidden>
             No HUD, font or effect textures yet. In the launcher's <b>Texture packs</b>, switch on
-            <b>Save the game's textures</b>, play a while, then come back and make the pack again.
+            <b>Save the game's textures</b>, play a while, then come back.
           </p>
-          <div class="actions">
-            <button id="make" class="primary">Make the pack</button>
-            <button id="make-new" title="Only the textures not in the last pack made with these settings">
-              Only new textures
-            </button>
-            <button id="cancel" hidden>Stop</button>
-          </div>
-          <progress id="progress" max="1" value="0" hidden></progress>
-          <p id="status" class="dim" role="status"></p>
           <p class="dim small">
-            Add the .zip in the launcher's <b>Texture packs</b> with <b>Add a pack…</b>. Adding a pack of only new
-            textures keeps the rest of yours.
+            Add the .zip in the launcher's <b>Texture packs</b> with <b>Add a pack…</b>. A pack of only new textures
+            keeps the rest of yours.
           </p>
         </section>
       </div>
-
-      <section class="settings panel" aria-label="Settings" data-section>
-        <div class="presets">
-          <label for="preset">Preset</label>
-          <select id="preset"></select>
-          <button id="save-preset">Save as…</button>
-          <button id="delete-preset">Delete</button>
-          <button id="export-preset">Export</button>
-          <button id="import-preset">Import</button>
-        </div>
-        <form id="name-form" class="name-form" hidden>
-          <input id="name-input" maxlength="40" placeholder="Preset name" aria-label="Preset name" />
-          <button type="submit" class="primary">Save</button>
-          <button type="button" id="name-cancel">Cancel</button>
-        </form>
-        <div class="device">
-          <label><input type="checkbox" id="use-gpu" checked /> Use the graphics card (fast)</label>
-          <label><input type="checkbox" id="advanced" /> Advanced options</label>
-          <p id="device-note" class="note"></p>
-        </div>
-        <div id="options" class="options"></div>
-      </section>
     </main>
+
+    <footer class="bar" data-section>
+      <progress id="progress" max="1" value="0" hidden></progress>
+      <p id="status" role="status"></p>
+      <div class="actions">
+        <button id="make" class="primary" disabled>Make the pack</button>
+        <button id="make-new" title="Only the textures not in your last pack made with these settings" disabled>
+          Only new
+        </button>
+        <button id="cancel" hidden>Stop</button>
+      </div>
+    </footer>
     <script type="module" src="main.js"></script>
   </body>
 </html>

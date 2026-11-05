@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (c) 2026 Mateusz Kłysz
-// The options the player sets, each explained by a picture (main.js draws it from a sample with
-// the option at `contrast` and at its value), the presets that come with the mod, and the values
-// the engine takes, in its order (src/engine/upscale.hpp, options_from). Every texture goes
+// The options the player sets, the presets that come with the mod, and the values the engine
+// takes, in its order (src/engine/upscale.hpp, options_from). Every texture goes
 // through a neural network (the Neural engine); xBRZ only shapes the edges of cut-outs.
 
 export const NEURAL = 4;
@@ -39,8 +38,6 @@ export const OPTIONS = [
     choices: MODELS,
     default: 0,
     hint: "The network that paints the new pixels.",
-    sample: "panel",
-    contrast: (v) => (v.model === 0 ? 1 : 0),
   },
   {
     key: "scale",
@@ -52,8 +49,6 @@ export const OPTIONS = [
     ],
     default: 4,
     hint: "How many times larger each texture gets.",
-    sample: "bolt",
-    contrast: (v) => (v.scale === 4 ? 2 : 4),
   },
   {
     key: "denoise",
@@ -66,8 +61,6 @@ export const OPTIONS = [
     unit: "%",
     when: GENERAL,
     hint: "How much grain and dither the model cleans away. Lower keeps more of the PS2's grain.",
-    sample: "sky",
-    contrast: (v) => (v.denoise > 50 ? 0 : 100),
   },
   {
     key: "strength",
@@ -79,8 +72,6 @@ export const OPTIONS = [
     default: 100,
     unit: "%",
     hint: "How much of the model's result is used; the rest is a plain smooth upscale. Lower is softer and closer to the original.",
-    sample: "bricks",
-    contrast: (v) => (v.strength > 50 ? 0 : 100),
   },
   {
     key: "colourLock",
@@ -92,8 +83,6 @@ export const OPTIONS = [
     default: 0,
     unit: "%",
     hint: "Puts the texture's own colours back where the model drifted them. Keeps the artists' palette exact.",
-    sample: "glow",
-    contrast: (v) => (v.colourLock ? 0 : 100),
   },
   {
     key: "sharpen",
@@ -105,8 +94,6 @@ export const OPTIONS = [
     default: 0,
     unit: "%",
     hint: "Crisps the result (an unsharp mask).",
-    sample: "bricks",
-    contrast: (v) => (v.sharpen ? 0 : 60),
   },
   {
     key: "original",
@@ -118,8 +105,6 @@ export const OPTIONS = [
     default: 0,
     unit: "%",
     hint: "Mixes the original's square pixels back in, for a more retro look.",
-    sample: "bolt",
-    contrast: (v) => (v.original ? 0 : 50),
   },
   {
     key: "deposterize",
@@ -131,8 +116,6 @@ export const OPTIONS = [
     default: 0,
     advanced: true,
     hint: "Blends a small palette's visible steps (banding) before the model sees them. Off keeps the exact colours.",
-    sample: "sky",
-    contrast: (v) => (v.deposterize ? 0 : 3),
   },
   {
     key: "exactAlpha",
@@ -141,8 +124,6 @@ export const OPTIONS = [
     default: true,
     advanced: true,
     hint: "Leaves, fences and the font keep only the transparency values they had, so they stay crisp and the game draws them as before.",
-    sample: "leaf",
-    contrast: (v) => !v.exactAlpha,
   },
   {
     key: "tolerance",
@@ -154,8 +135,6 @@ export const OPTIONS = [
     default: 30,
     advanced: true,
     hint: "Cut-out edges are shaped by xBRZ: how different two texels must be to make an edge there.",
-    sample: "leaf",
-    contrast: (v) => (v.tolerance > 30 ? 5 : 60),
   },
   {
     key: "luminance",
@@ -168,8 +147,6 @@ export const OPTIONS = [
     unit: "%",
     advanced: true,
     hint: "How much brightness counts against hue when xBRZ looks for a cut-out's edges.",
-    sample: "lines",
-    contrast: (v) => (v.luminance > 100 ? 10 : 300),
   },
   {
     key: "directionBias",
@@ -181,8 +158,6 @@ export const OPTIONS = [
     default: 40,
     advanced: true,
     hint: "How readily a cut-out's diagonal corners are rounded. Lower rounds more; higher keeps square corners.",
-    sample: "lines",
-    contrast: (v) => (v.directionBias > 40 ? 10 : 80),
     format: (n) => (n / 10).toFixed(1),
   },
 ];
