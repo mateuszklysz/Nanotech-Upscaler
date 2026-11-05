@@ -2,8 +2,9 @@
 # in the launcher: no library per platform, one archive for every system).
 #
 # Each push and pull request: the engine built and tested natively on Windows, Linux (x86_64 and
-# arm64) and macOS, and as the page's WebAssembly; a test texture upscaled by each with the same
-# options, and the PNGs compared byte for byte, so a pack is the same whatever made it; the mod
+# arm64) and macOS, and as the page's WebAssembly; test textures upscaled by each with the same
+# options (the General network too), and the PNGs compared byte for byte, so a pack is the same
+# whatever made it; the mod
 # packaged as nanotech-upscaler-<version>.zip with SHA256SUMS: the run's artifacts. A tag
 # v<version> also publishes them on that release, which is what OpenRAC's launcher installs from
 # when a player pastes the repository's address.
@@ -28,8 +29,10 @@ concurrency:
 env:
   WASI_SDK_URL: https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-25/wasi-sdk-25.0-x86_64-linux.tar.gz
   WASI_SDK_SHA256: 52640dde13599bf127a95499e61d6d640256119456d1af8897ab6725bcf3d89c
-  # The options the test texture is upscaled with, in the engine's order (src/engine/upscale.hpp).
+  # The options the test textures are upscaled with, in the engine's order (src/engine/upscale.hpp):
+  # the classic engines on texture.png, the General network (engine 4) on small.png.
   SETTINGS: "4|4 1|6 2 0 0 2 1 20 150 30 50 20|3 3 1 0"
+  NEURAL_SETTINGS: "4 4 0 0 0 1 30 100 40 20 10 60 85 40|2 4 1 1 1 1 30 100 40 0 0 100 100 0"
 
 jobs:
   native:
@@ -61,9 +64,16 @@ jobs:
         run: cmake --build build --config Release --parallel
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
-      - name: Upscale the test texture
+      - name: Network
+        # Windows has `python`, not always `python3`.
         run: |
-          python3 tools/test_texture.py texture.png
+          py=$(command -v python3 || command -v python)
+          "$py" tools/fetch_models.py --only general --cache build/weights --out build/models
+      - name: Upscale the test textures
+        run: |
+          py=$(command -v python3 || command -v python)
+          "$py" tools/test_texture.py texture.png
+          "$py" tools/test_texture.py small.png 48
           exe=$(find build -name 'nanotech' -o -name 'nanotech.exe' | grep -v CMakeFiles | head -1)
           mkdir out
           i=0
@@ -75,7 +85,14 @@ jobs:
             i=$((i + 1))
             IFS='|'
           done
-          (cd out && sha256sum -- *.png | tr -d '*' > "../sums-$NAME.txt")
+          for setting in $NEURAL_SETTINGS; do
+            IFS=' '
+            # shellcheck disable=SC2086
+            "$exe" --network build/models/general.bin small.png "out/$i.png" $setting
+            i=$((i + 1))
+            IFS='|'
+          done
+          (cd out && sha256sum -- *.png | sed 's/ \*/  /' > "../sums-$NAME.txt")
           cat "sums-$NAME.txt"
         env:
           NAME: ${{ matrix.name }}
@@ -105,9 +122,13 @@ jobs:
         run: cmake --build build --parallel
       - name: Test (in Node)
         run: ctest --test-dir build --output-on-failure
-      - name: Upscale the test texture
+      - name: Networks
+        # Real-ESRGAN's and PLKSR-Rep's weights, each checked against its pinned SHA-256.
+        run: python3 tools/fetch_models.py --cache build/weights
+      - name: Upscale the test textures
         run: |
           python3 tools/test_texture.py texture.png
+          python3 tools/test_texture.py small.png 48
           mkdir out
           i=0
           IFS='|'
@@ -118,11 +139,15 @@ jobs:
             i=$((i + 1))
             IFS='|'
           done
+          for setting in $NEURAL_SETTINGS; do
+            IFS=' '
+            # shellcheck disable=SC2086
+            node tools/nanotech.mjs build/nanotech.wasm --network ui/models/general.bin small.png "out/$i.png" $setting
+            i=$((i + 1))
+            IFS='|'
+          done
           (cd out && sha256sum -- *.png > ../sums-wasm.txt)
           cat sums-wasm.txt
-      - name: Networks
-        # Real-ESRGAN's and PLKSR-Rep's weights, each checked against its pinned SHA-256.
-        run: python3 tools/fetch_models.py --cache build/weights
       - name: Package
         run: |
           python3 tools/package.py build/nanotech.wasm -o dist

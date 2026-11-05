@@ -10,6 +10,7 @@ PLKSR-Rep (PLKSR with its 1x1 branches folded into the 3x3s) are read. out.bin i
 src/engine/neural.hpp ("NTN2"). With --wdn the weakly denoising model is written second (the
 engine blends the two, as Real-ESRGAN's denoise strength does).
 """
+
 from __future__ import annotations
 
 import pickle
@@ -146,8 +147,7 @@ def main() -> int:
         f.write(b"NTN2" + struct.pack("<II", 2, len(models)))
         for ops in models:
             f.write(struct.pack("<I", len(ops)))
-            for op in ops:
-                f.write(op)
+            f.writelines(ops)
             print(f"{len(ops)} ops")
     return 0
 

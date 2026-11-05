@@ -9,6 +9,7 @@ One folder, nanotech-upscaler-<version>/, with the manifest, the licence, the pa
 engine built for it and the networks (ui/models/, tools/fetch_models.py). The same archive serves every system: the page runs in the launcher.
 Standard library only.
 """
+
 from __future__ import annotations
 
 import argparse

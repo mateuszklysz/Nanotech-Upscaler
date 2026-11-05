@@ -4,11 +4,12 @@
 """The page's networks, fetched from where their authors publish them and converted:
 ui/models/{general,anime,detailed}.bin.
 
-    tools/fetch_models.py [--out ui/models] [--cache DIR]
+    tools/fetch_models.py [--out ui/models] [--cache DIR] [--only general]
 
 Each download is checked against its SHA-256 below before it is read. The weights are not in git:
 CI fetches them for the mod's archive (THIRD_PARTY.md lists their licences). Standard library only.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -21,7 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 REAL_ESRGAN = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/"
 # The NTIRE 2026 Mobile Real-World SR challenge's model zoo (github.com/jiatongli2024/
-# NTIRE2026_Mobile_RealWorld_ImageSR): team VIPSL's PLKSR-Rep, the challenge's winner.
+# NTIRE2026_Mobile_RealWorld_ImageSR): team VIPSL's PLKSR-Rep.
 DRIVE = "https://drive.usercontent.google.com/download?export=download&confirm=t&id="
 
 FILES = {
@@ -68,10 +69,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", type=Path, default=ROOT / "ui" / "models")
     parser.add_argument("--cache", type=Path, default=ROOT / "build" / "weights")
+    parser.add_argument("--only", choices=sorted(MODELS), help="just this network (CI's same-bytes check)")
     args = parser.parse_args()
     args.cache.mkdir(parents=True, exist_ok=True)
     args.out.mkdir(parents=True, exist_ok=True)
     for model, parts in MODELS.items():
+        if args.only and model != args.only:
+            continue
         sources = [p if p.startswith("--") else str(fetch(args.cache, p)) for p in parts]
         out = args.out / f"{model}.bin"
         subprocess.run(
